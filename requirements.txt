@@ -1,0 +1,2 @@
+imageio-ffmpeg   # only if ffmpeg is not installed on the computer (Ubuntu: apt install ffmpeg)
+# yt-dlp: on Python 3.10+ `pip install yt-dlp`; on older Pythons use the standalone build from github.com/yt-dlp/yt-dlp/releases
