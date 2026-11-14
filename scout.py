@@ -443,14 +443,36 @@ def verify_entry(entry):
     return out
 
 
+def note_hit(name, channel, vid, path=None):
+    """A Short in the feed had a learned voice: add its channel and the Short to that voice, so a voice learned once
+    gathers the 2 channels and 2 Shorts the shared list needs by itself. Returns True if the channel was new."""
+    voices = load_voices(path)
+    v = next((v for v in voices if v["name"] == name), None)
+    if not v or not channel:
+        return False
+    chans, ex = v.setdefault("channels", []), v.setdefault("examples", [])
+    new = channel not in chans and len(chans) < 50
+    if new:
+        chans.append(channel)
+    if vid not in ex and (new or len(ex) < 10):          # a Short from each new channel; a few more from known ones
+        ex.append(vid)
+    elif not new:
+        return False
+    save_voices(voices, path)
+    return new
+
+
 def look(vid, voices=None):
-    """Listen to the start of one Short. (score, reasons, facts line)."""
-    sound, words, _ = hear(vid)
+    """Listen to the start of one Short. (score, reasons, facts line). A learned voice heard here is remembered with
+    this Short and its channel (only for your own voices, and only when there's enough talking to judge)."""
+    sound, words, channel = hear(vid)
     vp = voiceprint(sound)
     who, gap = voice_match(vp, known_voices() if voices is None else voices)
     score, why = judge(who, words)
     facts = ("no voice" if vp is None else f"nearest voice {gap:.2f}" if gap is not None else "voice") + \
             ("" if words is None else f" | {words} words")
+    if voices is None and score and who and not who.get("shared") and note_hit(who["name"], channel, vid):
+        facts += f" | new channel {channel}"
     return score, why, facts
 
 

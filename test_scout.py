@@ -188,6 +188,24 @@ class SharedLists(unittest.TestCase):
         self.assertIsNone(scout.share_entry("nope"))
         self.assertEqual(scout.check_list(voice_list(e))[0]["name"], "qhiov4sdbna")   # a share is a valid list entry
 
+    def test_feed_hits_grow_a_voice(self):
+        scout.refresh_lists("https://a", lambda u: json.dumps(voice_list(self.a)).encode())
+        scout.voiceprint = lambda a, run=None: vp(5)
+        scout.hear = lambda vid: (np.zeros(10, np.float32), 40, "Roomie Reports")
+        scout.learn_short("qhIoV4SdbNA")                                    # learned once: 1 channel, 1 Short
+        scout.hear = lambda vid: (np.zeros(10, np.float32), 40, "Other Chan")
+        self.assertIn("new channel Other Chan", scout.look("ZN-Vzf-PCeg")[2])   # heard in the feed on another channel
+        scout.look("ZN-Vzf-PCeg")                                           # the same Short again: nothing new
+        e = scout.share_entry("qhIoV4SdbNA")
+        self.assertEqual((e["channels"], e["examples"]), (["Roomie Reports", "Other Chan"], ["qhIoV4SdbNA", "ZN-Vzf-PCeg"]))
+        scout.hear = lambda vid: (np.zeros(10, np.float32), 5, "Quiet Chan")  # too little talking to judge: not added
+        scout.look("AeyLzuVhr1s")
+        scout.voiceprint = lambda a, run=None: vp(1)                        # the shared voice: never changed here
+        scout.hear = lambda vid: (np.zeros(10, np.float32), 40, "Third Chan")
+        scout.look("AeyLzuVhr1s")
+        self.assertEqual(scout.load_voices()[0]["channels"], ["Roomie Reports", "Other Chan"])
+        self.assertEqual(scout.shared_voices()[0]["channels"], ["Drip Dyl", "Volze"])
+
 
 class Server(unittest.TestCase):
     """What YakTube talks to: GET /status and POST /look."""
