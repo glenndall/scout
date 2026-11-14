@@ -139,6 +139,10 @@ YakScout answers plain HTTP with JSON on port `8095`:
 
 `.venv/bin/python test_scout.py` (no network or downloads; the model test runs only if the model is there).
 
+## License
+
+MIT. See [LICENSE](LICENSE). The voice model it downloads has its own license (Apache 2.0, below).
+
 ## Credits
 
 The voice model is CAM++ from Alibaba's [3D-Speaker](https://github.com/modelscope/3D-Speaker) (Apache 2.0), in the
