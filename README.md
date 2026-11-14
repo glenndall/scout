@@ -1,7 +1,7 @@
-# YakScout
+# Scout
 
-![YakScout's settings page in YakTube (light theme), with the Dropped list showing farm Shorts it caught](docs/screenshots/yakscout-dropped-computer-light.png)
-*YakScout's page in YakTube (computer, light theme): connected, scanning about 3 seconds a Short, and the farm Shorts it
+![Scout's settings page in YakTube (light theme), with the Dropped list showing farm Shorts it caught](docs/screenshots/yakscout-dropped-computer-light.png)
+*Scout's page in YakTube (computer, light theme): connected, scanning about 3 seconds a Short, and the farm Shorts it
 caught, each with what gave it away (here, the voice) and **Bring back**.*
 
 ## 1. Overview & Purpose
@@ -10,28 +10,28 @@ caught, each with what gave it away (here, the voice) and **Bring back**.*
   filters out content-farm Shorts: the faceless channels that churn out Shorts from one formula, with the same
   synthetic voice, to farm views and ad revenue. Being made with AI isn't what it looks for (people make clever, funny
   things with AI); the repeated formula is.
-- **How it works:** YakTube reviews each Short's title, description and captions; YakScout listens to its audio and
+- **How it works:** YakTube reviews each Short's title, description and captions; Scout listens to its audio and
   adds what it hears to YakTube's score.
-- **Flexibility:** YakScout runs on its own, in Docker (on a NAS or server) or directly on a Mac or Ubuntu machine.
-  YakTube works normally while YakScout is offline, and YakScout catches up when it's back.
+- **Flexibility:** Scout runs on its own, in Docker (on a NAS or server) or directly on a Mac or Ubuntu machine.
+  YakTube works normally while Scout is offline, and Scout catches up when it's back.
 
 | | |
 |---|---|
-| ![YakScout's AI-Farm channels and shared Voices lists (dark theme)](docs/screenshots/yakscout-lists-computer-dark.png) | ![YakTube on a phone: Home (light) and YakScout settings (dark)](docs/screenshots/phone-home-and-yakscout.jpg) |
-| **The lists** (computer, dark): AI-Farm channels it found, and the shared list of farm voices | **On a phone:** YakTube's Home (light) and the YakScout page (dark) |
+| ![Scout's AI-Farm channels and shared Voices lists (dark theme)](docs/screenshots/yakscout-lists-computer-dark.png) | ![YakTube on a phone: Home (light) and Scout settings (dark)](docs/screenshots/phone-home-and-yakscout.jpg) |
+| **The lists** (computer, dark): AI-Farm channels it found, and the shared list of farm voices | **On a phone:** YakTube's Home (light) and the Scout page (dark) |
 
 *Screenshots use demo data.*
 
 ## 2. How the Audio Analysis Works
 
-For each Short, YakScout fetches only the first 15 seconds of the original audio (about 80 KB, never one of YouTube's
+For each Short, Scout fetches only the first 15 seconds of the original audio (about 80 KB, never one of YouTube's
 AI-dubbed tracks) and runs three steps:
 
 1. **Speech check:** someone must actually be talking (at least 15 words in YouTube's automatic captions for those
    seconds), so music on its own is left alone.
 2. **Voiceprint:** a speaker-recognition model (CAM++ from 3D-Speaker) turns the voice into a voiceprint, fed in
    2-second pieces and averaged.
-3. **Comparison:** the voiceprint is compared with the farm voices YakScout has learned, and with the shared list of
+3. **Comparison:** the voiceprint is compared with the farm voices Scout has learned, and with the shared list of
    farm voices other people found ([yakscout-voices](https://github.com/glenndall/yakscout-voices), downloaded once
    a day).
 
@@ -40,7 +40,7 @@ won't hand the audio over directly.
 
 **Scoring & thresholds**
 
-| YakScout heard | Points |
+| Scout heard | Points |
 |---|---|
 | A learned farm voice | +35 |
 | A learned farm voice heard on 2 or more channels | +50 (drops a Short by itself) |
@@ -63,10 +63,10 @@ log, and if a voice catches the wrong Shorts, forget it.
 3. Synology: Container Manager → Project → Create → pick the folder → it finds `docker-compose.yml` → Next → Done.
    Elsewhere: `docker compose up -d --build` in the folder. The first start builds the image, which takes a few
    minutes (it downloads Python's libraries and the 29 MB voice model). The container shows **Healthy** once
-   YakScout answers on port `8095`.
+   Scout answers on port `8095`.
 
-YakScout and YakTube can start or restart in any order: until YakScout answers, YakTube shows **Can't reach** and
-tries again every minute. To update YakScout, replace `scout.py` and restart the project; rebuild (Action → Build)
+Scout and YakTube can start or restart in any order: until Scout answers, YakTube shows **Can't reach** and
+tries again every minute. To update Scout, replace `scout.py` and restart the project; rebuild (Action → Build)
 only for a new `Dockerfile` or to bring yt-dlp up to date.
 
 **macOS (standalone)**
@@ -92,19 +92,19 @@ If the firewall is on, let YakTube in: `sudo ufw allow 8095/tcp`.
 ```bash
 .venv/bin/python scout.py                                      # listen for YakTube on port 8095
 .venv/bin/python scout.py learn https://youtube.com/shorts/... # this one is from a farm: learn its voice
-.venv/bin/python scout.py check https://youtube.com/shorts/... # what YakScout makes of one (YakTube isn't told)
+.venv/bin/python scout.py check https://youtube.com/shorts/... # what Scout makes of one (YakTube isn't told)
 ```
 In Docker: Container Manager → Container → yakscout → Terminal → Create → `bash`, then `python scout.py learn <link>`
 (or `sudo docker exec yakscout python scout.py learn <link>` over SSH).
 
-- **Training:** teach YakScout a farm voice from the terminal (`learn`) or, easier, from YakTube: **Settings →
-  YakScout → Voices**, paste a link and **Learn**. Teaching a voice it already knows adds that channel to it instead
+- **Training:** teach Scout a farm voice from the terminal (`learn`) or, easier, from YakTube: **Settings →
+  Scout → Voices**, paste a link and **Learn**. Teaching a voice it already knows adds that channel to it instead
   of making a duplicate; that's how a voice reaches "2 or more channels".
-- **Growing by itself:** when a learned voice turns up in your feed on a new channel, YakScout adds that channel and
+- **Growing by itself:** when a learned voice turns up in your feed on a new channel, Scout adds that channel and
   Short to it, so a voice learned once gathers the 2 channels and 2 Shorts the shared list needs without you. Shared
   voices are never changed, and a Short with too little talking to judge isn't counted. A voice keeps up to 50
   channels and 50 Shorts; Share sends 20 channels and 10 Shorts, enough for a review.
-- **Shared voices:** YakScout downloads the community list of farm voices,
+- **Shared voices:** Scout downloads the community list of farm voices,
   [yakscout-voices](https://github.com/glenndall/yakscout-voices), at start-up and once a day (`python scout.py lists`
   does it now). A voice you learn that's already on it isn't learned twice. `SCOUT_LISTS` sets other list URLs
   (space-separated), or `off` for none.
@@ -117,19 +117,19 @@ In Docker: Container Manager → Container → yakscout → Terminal → Create 
 
 ## 5. YakTube Integration & Management
 
-In YakTube, open **Settings → YakScout** (under Plugins), enter YakScout's address (the NAS's own address, e.g.
+In YakTube, open **Settings → Scout** (under Plugins), enter Scout's address (the NAS's own address, e.g.
 `192.168.1.20`) and port `8095`, and Save. The badge turns **Connected**, and the line under the address shows the
 plugin version, seconds per Short, the last scan and uptime. The counts at the top refresh by themselves.
 
 **How a Short is judged.** Each new Short gets a score from 0 to 100: **Titles & captions** (built into YakTube)
-adds points for farm clues in what it says about itself, **Scan voices** (YakScout) adds points for a farm voice. At
+adds points for farm clues in what it says about itself, **Scan voices** (Scout) adds points for a farm voice. At
 **Drop at** (50 to start) the Short leaves the Shorts list. Two lists overrule the score: **Never drop** always wins,
 then **AI-Farm channels**.
 
 **Scoring & rules**
 - **Dropped:** what was taken out, and why (*Story*, *Voice*, *Channel*, *Pasted*, *Text*). **Bring back** returns
   one for good.
-- **AI-Farm channels:** every Short from these is dropped unchecked. YakScout adds a channel itself once it has judged
+- **AI-Farm channels:** every Short from these is dropped unchecked. Scout adds a channel itself once it has judged
   3 or more of its Shorts and dropped over half; you can add one by name. **×** takes one off.
 - **Never drop:** channels that are always kept, whatever they score. Adding one brings its dropped Shorts back.
 - **Voices:** your learned farm voices and the shared list's, tagged *Learned* or *Shared*, with the channels each was
@@ -141,19 +141,19 @@ then **AI-Farm channels**.
 
 **Logs & backups**
 - **Submissions:** the open pull requests on the shared voice list. **Check** listens to each one's example Shorts
-  with YakScout (same voice?) and reads them with the titles & captions check (farm clues?), here at home, since
+  with Scout (same voice?) and reads them with the titles & captions check (farm clues?), here at home, since
   YouTube blocks GitHub's servers. Each gets one verdict: ✅ looks good to merge, ⚠️ same voice but few farm clues
   (look at the channels), ❌ don't merge, or ⏸ couldn't check yet. **Open** takes you to the pull request to merge it.
-- **Log:** the last 100 verdicts, *Read* (titles & captions) or *Scanned* (YakScout listened too), with score and
+- **Log:** the last 100 verdicts, *Read* (titles & captions) or *Scanned* (Scout listened too), with score and
   reasons. **Download CSV** saves every verdict still remembered, for Numbers or Excel.
 - **Backup:** a `.zip` with `backup.json` (channel lists, Shorts you brought back, Advanced settings and, while
-  YakScout is connected, its learned voiceprints) and `log.csv`.
+  Scout is connected, its learned voiceprints) and `log.csv`.
 - **Restore:** pick the `.zip` (or the `backup.json` inside it). It adds to what's there and removes nothing; voices
-  go back only while YakScout is connected.
+  go back only while Scout is connected.
 
 ## 6. API Reference (For Integrations)
 
-YakScout answers plain HTTP with JSON on port `8095`:
+Scout answers plain HTTP with JSON on port `8095`:
 
 - `GET /status`: version, whether it's busy, uptime in seconds, the shared lists (URL, voices, when downloaded) and
   all voices (name, date learned, channels, `learned` or `shared`).
@@ -168,11 +168,11 @@ YakScout answers plain HTTP with JSON on port `8095`:
 - `GET /voices` / `POST /voices` `{"voices": [...]}`: all learned voices with their voiceprints, and adding them back
   (merged with what's there). YakTube's Backup and Restore use these.
 
-**Note:** there's no login. Keep YakScout (and YakTube) on your home network, never open to the internet.
+**Note:** there's no login. Keep Scout (and YakTube) on your home network, never open to the internet.
 
 ## 7. Responsible Use
 
-YakScout recognises voices. It was built to recognise the synthetic, text-to-speech voices that content farms reuse
+Scout recognises voices. It was built to recognise the synthetic, text-to-speech voices that content farms reuse
 across channel after channel, but the same model can recognise a real person's voice too. Please keep it to what it's
 for.
 
@@ -187,9 +187,9 @@ for.
 - **It can be wrong.** A match means two voices sound alike, not that the same person or company made both. Similar
   voices exist, and a farm voice can be a stock voice that honest creators use too. Treat a match as a reason to look,
   not as proof, and use **Never drop** or **Bring back** when it catches the wrong thing.
-- **Being made with AI isn't the problem.** People make clever, funny and useful things with AI voices; YakScout looks
+- **Being made with AI isn't the problem.** People make clever, funny and useful things with AI voices; Scout looks
   for the repeated formula, not for AI as such.
-- **Respect the platforms.** YakScout reads only the first seconds of public videos, one at a time, the way a viewer's
+- **Respect the platforms.** Scout reads only the first seconds of public videos, one at a time, the way a viewer's
   app does. Don't use it for bulk downloading or scraping, and follow the terms of the sites you use it with.
 
 ## Tests

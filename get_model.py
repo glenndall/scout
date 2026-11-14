@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Download YakScout's voice model (29 MB) into models/, and check it's the right file.
+"""Download Scout's voice model (29 MB) into models/, and check it's the right file.
 
     python3 get_model.py
 
