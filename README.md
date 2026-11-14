@@ -135,6 +135,28 @@ YakScout answers plain HTTP with JSON on port `8095`:
 
 **Note:** there's no login. Keep YakScout (and YakTube) on your home network, never open to the internet.
 
+## 7. Responsible Use
+
+YakScout recognises voices. It was built to recognise the synthetic, text-to-speech voices that content farms reuse
+across channel after channel, but the same model can recognise a real person's voice too. Please keep it to what it's
+for.
+
+- **Do:** filter mass-produced content for yourself and your household, study how content-farm networks share voices,
+  check whether your own voice or videos have been re-uploaded by someone else.
+- **Don't:** use it to identify, follow or build profiles of real people from their voice, to find out who is behind an
+  anonymous channel, or to watch what someone posts. Recognising a person by their voice can be biometric processing,
+  which privacy laws in many places (for example the GDPR in Europe and BIPA in Illinois) restrict or forbid without
+  their consent.
+- **Teach it farm voices, not people.** Only `learn` from Shorts you have good reason to believe come from a content
+  farm. A voice learned from a real person will flag everything that person makes.
+- **It can be wrong.** A match means two voices sound alike, not that the same person or company made both. Similar
+  voices exist, and a farm voice can be a stock voice that honest creators use too. Treat a match as a reason to look,
+  not as proof, and use **Never drop** or **Bring back** when it catches the wrong thing.
+- **Being made with AI isn't the problem.** People make clever, funny and useful things with AI voices; YakScout looks
+  for the repeated formula, not for AI as such.
+- **Respect the platforms.** YakScout reads only the first seconds of public videos, one at a time, the way a viewer's
+  app does. Don't use it for bulk downloading or scraping, and follow the terms of the sites you use it with.
+
 ## Tests
 
 `.venv/bin/python test_scout.py` (no network or downloads; the model test runs only if the model is there).
