@@ -264,6 +264,18 @@ class Server(unittest.TestCase):
         self.assertEqual((code, e["channels"], e["model"]), (200, ["Drip Dyl"], scout.MODEL_ID))
         self.assertEqual(self.ask("/share?name=farm-0002")[0], 404)          # only your own voices are shared from here
 
+    def test_verify(self):
+        keep = scout.hear, scout.voiceprint
+        scout.hear = lambda vid: (np.zeros(10, np.float32), 40, "Chan " + vid[:2])
+        scout.voiceprint = lambda a, run=None: vp(1)
+        try:
+            code, r = self.ask("/verify", {"entry": {"id": "x", "print": vp(1).tolist(), "examples": ["tbQTA6u4lEM", "bad"]}})
+        finally:
+            scout.hear, scout.voiceprint = keep
+        self.assertEqual(code, 200)
+        self.assertEqual([(e["id"], e["channel"], round(e["gap"], 3)) for e in r["examples"]], [("tbQTA6u4lEM", "Chan tb", 0.0)])
+        self.assertEqual(self.ask("/verify", {"entry": {"print": [1]}})[0], 400)
+
     def test_look(self):
         def look(vid, voices=None):
             if vid == "gone0000000":

@@ -124,6 +124,10 @@ then **AI-Farm channels**.
   days, after which a Short is judged again; ones you brought back are always remembered).
 
 **Logs & backups**
+- **Submissions:** the open pull requests on the shared voice list. **Check** listens to each one's example Shorts
+  with YakScout (same voice?) and reads them with the titles & captions check (farm clues?), here at home, since
+  YouTube blocks GitHub's servers. Each gets one verdict: ✅ looks good to merge, ⚠️ same voice but few farm clues
+  (look at the channels), ❌ don't merge, or ⏸ couldn't check yet. **Open** takes you to the pull request to merge it.
 - **Log:** the last 100 verdicts, *Read* (titles & captions) or *Scanned* (YakScout listened too), with score and
   reasons. **Download CSV** saves every verdict still remembered, for Numbers or Excel.
 - **Backup:** a `.zip` with `backup.json` (channel lists, Shorts you brought back, Advanced settings and, while
@@ -143,6 +147,8 @@ YakScout answers plain HTTP with JSON on port `8095`:
   little talking.
 - `POST /forget` `{"name": ...}`: removes a learned voice, or hides a shared one here.
 - `GET /share?name=...`: a learned voice as a submission file for the shared list.
+- `POST /verify` `{"entry": voice file}`: listens to that file's example Shorts and answers how close each one's
+  voice is to its voiceprint (YakTube's **Submissions** list).
 - `GET /voices` / `POST /voices` `{"voices": [...]}`: all learned voices with their voiceprints, and adding them back
   (merged with what's there). YakTube's Backup and Restore use these.
 

@@ -28,7 +28,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 VOICES = os.environ.get("SCOUT_VOICES", os.path.join(HERE, "voices.json"))   # voices learned from known farm Shorts
 MODEL = os.environ.get("SCOUT_MODEL", os.path.join(HERE, "models", "3dspeaker_speech_campplus_sv_en_voxceleb_16k.onnx"))
 PORT = int(os.environ.get("SCOUT_PORT", "8095"))                                # where YakTube finds it
-VERSION = "0.6"
+VERSION = "0.7"
 MODEL_ID = "campplus-en-voxceleb-16k/fbank80-2s-avg/1"   # what made a voiceprint: only ones made the same way compare
 # Shared voice lists (one or more URLs, space-separated; "off" for none): farm voices other people found, downloaded
 # once a day and used alongside the ones learned here. Kept in shared-voices.json next to voices.json.
@@ -477,7 +477,8 @@ def status():
 class Handler(BaseHTTPRequestHandler):
     """GET /status; POST /look {"id"} -> {"score": 0-100, "why": [...], "facts"}; POST /learn {"id"} -> {"name",
     "channels", "new"}; POST /forget {"name"} -> {"forgot": true/false}; GET /voices and POST /voices {"voices": [...]}
-    (YakTube's backup and restore)."""
+    (YakTube's backup and restore); POST /verify {"entry": voice file} -> {"examples": [{"id", "channel", "gap"}]}
+    (YakTube's Submissions list)."""
     def reply(self, code, obj):
         body = json.dumps(obj).encode()
         self.send_response(code)
@@ -498,14 +499,24 @@ class Handler(BaseHTTPRequestHandler):
         self.reply(404, {"error": "not here"})
 
     def do_POST(self):
-        if self.path not in ("/look", "/learn", "/forget", "/voices"):
+        if self.path not in ("/look", "/learn", "/forget", "/voices", "/verify"):
             return self.reply(404, {"error": "not here"})
-        cap = 4_000_000 if self.path == "/voices" else 1000
+        cap = {"/voices": 4_000_000, "/verify": 200_000}.get(self.path, 1000)
         try:
             body = json.loads(self.rfile.read(min(int(self.headers.get("Content-Length") or 0), cap)) or b"{}")
             body = body if isinstance(body, dict) else {}
         except ValueError:
             body = {}
+        if self.path == "/verify":                               # a submitted voice: do its examples have that voice?
+            entry = body.get("entry")
+            if not (isinstance(entry, dict) and good_print(entry.get("print"))):
+                return self.reply(400, {"error": "need a voice file"})
+            entry = dict(entry, examples=[x for x in entry.get("examples", []) if isinstance(x, str) and VID_RE.fullmatch(x)][:10])
+            with LOOKING:
+                got = verify_entry(entry)
+            return self.reply(200, {"examples": [{"id": v, "channel": ch, "gap": g if isinstance(g, float) else None,
+                                                  "error": "" if isinstance(g, float) else (g or "no talking at the start")}
+                                                 for v, ch, g in got], "limit": VOICE_MATCH})
         if self.path == "/voices":                               # restore from YakTube's backup
             with LOOKING:
                 n = add_voices(body.get("voices"))
