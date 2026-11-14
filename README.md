@@ -100,6 +100,9 @@ In Docker: Container Manager → Container → yakscout → Terminal → Create 
 - **Training:** teach YakScout a farm voice from the terminal (`learn`) or, easier, from YakTube: **Settings →
   YakScout → Voices**, paste a link and **Learn**. Teaching a voice it already knows adds that channel to it instead
   of making a duplicate; that's how a voice reaches "2 or more channels".
+- **Growing by itself:** when a learned voice turns up in your feed on a new channel, YakScout adds that channel and
+  Short to it, so a voice learned once gathers the 2 channels and 2 Shorts the shared list needs without you. Shared
+  voices are never changed, and a Short with too little talking to judge isn't counted.
 - **Shared voices:** YakScout downloads the community list of farm voices,
   [yakscout-voices](https://github.com/glenndall/yakscout-voices), at start-up and once a day (`python scout.py lists`
   does it now). A voice you learn that's already on it isn't learned twice. `SCOUT_LISTS` sets other list URLs
