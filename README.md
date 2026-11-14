@@ -1,5 +1,9 @@
 # YakScout
 
+![YakScout's settings page in YakTube (light theme), with the Dropped list showing farm Shorts it caught](docs/screenshots/yakscout-dropped-computer-light.png)
+*YakScout's page in YakTube (computer, light theme): connected, scanning about 3 seconds a Short, and the farm Shorts it
+caught, each with what gave it away (here, the voice) and **Bring back**.*
+
 ## 1. Overview & Purpose
 
 - **What it is:** an optional companion service for [YakTube](https://github.com/glenndall/yaktube) that finds and
@@ -10,6 +14,13 @@
   adds what it hears to YakTube's score.
 - **Flexibility:** YakScout runs on its own, in Docker (on a NAS or server) or directly on a Mac or Ubuntu machine.
   YakTube works normally while YakScout is offline, and YakScout catches up when it's back.
+
+| | |
+|---|---|
+| ![YakScout's AI-Farm channels and shared Voices lists (dark theme)](docs/screenshots/yakscout-lists-computer-dark.png) | ![YakTube on a phone: Home (light) and YakScout settings (dark)](docs/screenshots/phone-home-and-yakscout.jpg) |
+| **The lists** (computer, dark): AI-Farm channels it found, and the shared list of farm voices | **On a phone:** YakTube's Home (light) and the YakScout page (dark) |
+
+*Screenshots use demo data.*
 
 ## 2. How the Audio Analysis Works
 

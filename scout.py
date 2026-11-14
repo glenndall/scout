@@ -28,7 +28,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 VOICES = os.environ.get("SCOUT_VOICES", os.path.join(HERE, "voices.json"))   # voices learned from known farm Shorts
 MODEL = os.environ.get("SCOUT_MODEL", os.path.join(HERE, "models", "3dspeaker_speech_campplus_sv_en_voxceleb_16k.onnx"))
 PORT = int(os.environ.get("SCOUT_PORT", "8095"))                                # where YakTube finds it
-VERSION = "0.7"
+VERSION = "1.0"
 MODEL_ID = "campplus-en-voxceleb-16k/fbank80-2s-avg/1"   # what made a voiceprint: only ones made the same way compare
 # Shared voice lists (one or more URLs, space-separated; "off" for none): farm voices other people found, downloaded
 # once a day and used alongside the ones learned here. Kept in shared-voices.json next to voices.json.
