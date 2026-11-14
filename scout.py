@@ -386,7 +386,8 @@ def share_entry(name, path=None):
     if not v:
         return None
     return {"id": re.sub(r"[^a-z0-9-]", "-", name.lower())[:40], "model": MODEL_ID, "added": time.strftime("%Y-%m-%d"),
-            "channels": v.get("channels", []), "examples": v.get("examples", []) or ([name] if VID_RE.fullmatch(name) else []),
+            "channels": v.get("channels", [])[:20],                  # what a review needs; keeps Share's link short
+            "examples": (v.get("examples", []) or ([name] if VID_RE.fullmatch(name) else []))[:10],
             "note": "", "print": v["print"]}
 
 
@@ -454,7 +455,7 @@ def note_hit(name, channel, vid, path=None):
     new = channel not in chans and len(chans) < 50
     if new:
         chans.append(channel)
-    if vid not in ex and (new or len(ex) < 10):          # a Short from each new channel; a few more from known ones
+    if vid not in ex and len(ex) < 50:                   # up to 50 Shorts at home (Share sends 10 of them)
         ex.append(vid)
     elif not new:
         return False

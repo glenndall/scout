@@ -205,6 +205,14 @@ class SharedLists(unittest.TestCase):
         scout.look("AeyLzuVhr1s")
         self.assertEqual(scout.load_voices()[0]["channels"], ["Roomie Reports", "Other Chan"])
         self.assertEqual(scout.shared_voices()[0]["channels"], ["Drip Dyl", "Volze"])
+        scout.voiceprint = lambda a, run=None: vp(5)                        # a busy farm: 60 more channels
+        for i in range(60):
+            scout.hear = lambda vid, i=i: (np.zeros(10, np.float32), 40, f"Chan {i}")
+            scout.look(f"x{i:010d}")
+        v = scout.load_voices()[0]
+        self.assertEqual((len(v["channels"]), len(v["examples"])), (50, 50))   # kept at home
+        e = scout.share_entry("qhIoV4SdbNA")
+        self.assertEqual((len(e["channels"]), len(e["examples"])), (20, 10))   # sent: enough to review, link fits
 
 
 class Server(unittest.TestCase):
