@@ -469,6 +469,7 @@ def status():
     lists = [{k: l.get(k) for k in ("url", "count", "fetched", "error")} for l in read_json(SHARED).get("lists", [])]
     return {"scout": VERSION, "busy": LOOKING.locked(), "up": int(time.time() - STARTED), "lists": lists,
             "voices": [{"name": v["name"], "learned": when(v), "channels": len(v.get("channels", [])),
+                        "examples": len(v.get("examples", [])) or int(bool(VID_RE.fullmatch(v["name"]))),   # as Share counts them
                         "channel_names": v.get("channels", [])[:20], "source": "learned"} for v in load_voices()] +
                       [{"name": v["name"], "learned": "", "channels": len(v.get("channels", [])),
                         "channel_names": v.get("channels", [])[:20], "source": "shared"} for v in shared_voices()]}

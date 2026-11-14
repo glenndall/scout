@@ -260,6 +260,7 @@ class Server(unittest.TestCase):
         st = self.ask("/status")[1]
         self.assertEqual([(v["name"], v["source"]) for v in st["voices"]], [("tbQTA6u4lEM", "learned"), ("farm-0002", "shared")])
         self.assertEqual([(l["url"], l["count"]) for l in st["lists"]], [("https://a", 1)])
+        self.assertEqual(st["voices"][0]["examples"], len(scout.load_voices()[0].get("examples", [])) or 1)   # what Share would send
         code, e = self.ask("/share?name=tbQTA6u4lEM")
         self.assertEqual((code, e["channels"], e["model"]), (200, ["Drip Dyl"], scout.MODEL_ID))
         self.assertEqual(self.ask("/share?name=farm-0002")[0], 404)          # only your own voices are shared from here
