@@ -35,7 +35,7 @@ AI-dubbed tracks) and runs three steps:
    farm voices other people found ([yakscout-voices](https://github.com/glenndall/yakscout-voices), downloaded once
    a day).
 
-About 2 seconds a Short on a 2020 MacBook, about 4 on a Synology DS220+. yt-dlp is only a backup for when YouTube
+About 2 seconds a Short on a 2020 MacBook, about 3 on a Synology DS220+. yt-dlp is only a backup for when YouTube
 won't hand the audio over directly.
 
 **Scoring & thresholds**
