@@ -32,7 +32,7 @@ VERSION = "1.0"
 MODEL_ID = "campplus-en-voxceleb-16k/fbank80-2s-avg/1"   # what made a voiceprint: only ones made the same way compare
 # Shared voice lists (one or more URLs, space-separated; "off" for none): farm voices other people found, downloaded
 # once a day and used alongside the ones learned here. Kept in shared-voices.json next to voices.json.
-LISTS = os.environ.get("SCOUT_LISTS", "https://raw.githubusercontent.com/glenndall/yakscout-voices/main/voices.json")
+LISTS = os.environ.get("SCOUT_LISTS", "https://raw.githubusercontent.com/glenndall/scout-voices/main/voices.json")
 SHARED = os.path.join(os.path.dirname(os.path.abspath(VOICES)), "shared-voices.json")
 VID_RE = re.compile(r"(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{11}(?![A-Za-z0-9_-])")
 
@@ -381,7 +381,7 @@ def forget_voice(name, path=None):
 
 
 def share_entry(name, path=None):
-    """A learned voice as a submission for a shared list (one file per voice, see the yakscout-voices repo), or None."""
+    """A learned voice as a submission for a shared list (one file per voice, see the scout-voices repo), or None."""
     v = next((v for v in load_voices(path) if v["name"] == name), None)
     if not v:
         return None

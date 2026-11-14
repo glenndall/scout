@@ -32,7 +32,7 @@ AI-dubbed tracks) and runs three steps:
 2. **Voiceprint:** a speaker-recognition model (CAM++ from 3D-Speaker) turns the voice into a voiceprint, fed in
    2-second pieces and averaged.
 3. **Comparison:** the voiceprint is compared with the farm voices Scout has learned, and with the shared list of
-   farm voices other people found ([yakscout-voices](https://github.com/glenndall/yakscout-voices), downloaded once
+   farm voices other people found ([scout-voices](https://github.com/glenndall/scout-voices), downloaded once
    a day).
 
 About 2 seconds a Short on a 2020 MacBook, about 3 on a Synology DS220+. yt-dlp is only a backup for when YouTube
@@ -105,7 +105,7 @@ In Docker: Container Manager → Container → yakscout → Terminal → Create 
   voices are never changed, and a Short with too little talking to judge isn't counted. A voice keeps up to 50
   channels and 50 Shorts; Share sends 20 channels and 10 Shorts, enough for a review.
 - **Shared voices:** Scout downloads the community list of farm voices,
-  [yakscout-voices](https://github.com/glenndall/yakscout-voices), at start-up and once a day (`python scout.py lists`
+  [scout-voices](https://github.com/glenndall/scout-voices), at start-up and once a day (`python scout.py lists`
   does it now). A voice you learn that's already on it isn't learned twice. `SCOUT_LISTS` sets other list URLs
   (space-separated), or `off` for none.
 - **Sharing a voice:** `python scout.py share <voice name>` (or **Share** on a learned voice in YakTube) writes a file to
