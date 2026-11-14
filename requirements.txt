@@ -1,2 +1,5 @@
-imageio-ffmpeg   # only if ffmpeg is not installed on the computer (Ubuntu: apt install ffmpeg)
-# yt-dlp: on Python 3.10+ `pip install yt-dlp`; on older Pythons use the standalone build from github.com/yt-dlp/yt-dlp/releases
+numpy<2.1            # the 2.0 line still runs on the Mac's own Python 3.9
+onnxruntime<1.20     # runs the voice model (1.19 is the last for Python 3.9)
+imageio-ffmpeg       # only if ffmpeg isn't installed on the computer (Ubuntu: apt install ffmpeg)
+# yt-dlp (optional backup): on Python 3.10+ `pip install yt-dlp`; on older Pythons use the standalone build from
+# github.com/yt-dlp/yt-dlp/releases

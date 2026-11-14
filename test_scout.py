@@ -1,80 +1,121 @@
-"""Tests: python3 test_scout.py. No network, no downloads, no ffmpeg needed (synthetic sound and pictures)."""
-import array, json, math, os, sys, tempfile, threading, unittest, urllib.error, urllib.request
+"""Tests: python3 test_scout.py (with numpy installed). No network or downloads; the model test runs only if the
+model file is there."""
+import json, math, os, sys, tempfile, threading, unittest, urllib.error, urllib.request
+import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import scout
 
-R = scout.RATE
+SR = scout.SR
 
 
-def voice(f0, tilt=1.0, seconds=10):
-    """A synthetic voice: harmonics of f0, quieter the higher they go (tilt sets how fast). Like speech, its pitch
-    keeps moving (here +-12% over each second) around f0."""
-    out, phase = array.array("h"), 0.0
-    for t in range(R * seconds):
-        phase += 2 * math.pi * f0 * (1 + 0.12 * math.sin(2 * math.pi * t / R)) / R
-        out.append(int(3000 * sum(math.sin(h * phase) / h ** tilt for h in range(1, 11))))
-    return out
+def tone(f0, seconds=4, tilt=1.0):
+    """A synthetic voice-like sound: harmonics of f0 whose pitch keeps moving a little."""
+    t = np.arange(SR * seconds) / SR
+    phase = 2 * np.pi * f0 * (t + 0.12 / (2 * np.pi) * np.sin(2 * np.pi * t))
+    return (0.1 * sum(np.sin(h * phase) / h ** tilt for h in range(1, 11))).astype(np.float32)
 
 
-def picture(yellow_at=None):
-    """One CW x CH frame, dark grey, with an optional small yellow block (a caption word) at x."""
-    f = bytearray([40] * (scout.CW * scout.CH * 3))
-    if yellow_at is not None:
-        for y in range(int(scout.CH * .6), int(scout.CH * .6) + 4):
-            for x in range(yellow_at, yellow_at + 10):
-                i = (y * scout.CW + x) * 3
-                f[i:i + 3] = bytes([250, 220, 30])
-    return bytes(f)
+def fake_run(x):
+    """Stands in for the model: a "voiceprint" from the average of each band (so it follows the sound's colour)."""
+    v = x[0].std(0) + 1e-3
+    return np.concatenate([v] * 7)[:512]
 
 
-class Voice(unittest.TestCase):
-    def test_pitch_and_match(self):
-        p = scout.voice_profile(voice(170))
-        self.assertAlmostEqual(p["pitch"], 170, delta=5)
-        known = [dict(p, name="farm")]
-        self.assertEqual(scout.voice_match(scout.voice_profile(voice(171)), known), "farm")     # same voice
-        self.assertIsNone(scout.voice_match(scout.voice_profile(voice(250)), known))            # higher voice
-        self.assertIsNone(scout.voice_match(scout.voice_profile(voice(170, tilt=3)), known))    # same pitch, other tone
-        self.assertIsNone(scout.voice_match(None, known))
+def vp(seed):
+    v = np.random.default_rng(seed).normal(size=512)
+    return v / np.linalg.norm(v)
 
-    def test_no_speech(self):
-        self.assertIsNone(scout.voice_profile(array.array("h", [0] * R * 10)))                  # silence
-        self.assertIsNone(scout.voice_profile(voice(170, seconds=1)))                           # too little
 
+class Voiceprint(unittest.TestCase):
+    def test_fbank(self):
+        f = scout.fbank(tone(170, 1))
+        self.assertEqual(f.shape, (98, 80))                            # 10 ms steps over 1 s, 80 bands
+        self.assertEqual(scout.fbank(np.zeros(100, np.float32)).shape, (0, 80))
+
+    def test_pieces(self):
+        self.assertIsNone(scout.voiceprint(tone(170, 1), fake_run))      # under 2 seconds: nothing to go on
+        p = scout.voiceprint(tone(170, 4), fake_run)
+        self.assertAlmostEqual(float(np.linalg.norm(p)), 1, places=5)
+        same, other = scout.voiceprint(tone(170, 6), fake_run), scout.voiceprint(tone(170, 6, tilt=3), fake_run)
+        self.assertLess(scout.voice_gap(p, same), scout.voice_gap(p, other))
+
+    def test_match_and_judge(self):
+        a, b = vp(1), vp(2)
+        known = [{"name": "A", "print": a.tolist(), "channels": ["x"]},
+                 {"name": "B", "print": b.tolist(), "channels": ["y", "z"]}]
+        near_a = a + 0.02 * vp(3)
+        who, gap = scout.voice_match(near_a / np.linalg.norm(near_a), known)
+        self.assertEqual(who["name"], "A")
+        self.assertLess(gap, scout.VOICE_MATCH)
+        self.assertEqual(scout.voice_match(vp(4), known)[0], None)        # an unrelated voice
+        self.assertEqual(scout.voice_match(None, known), (None, None))
+        self.assertEqual(scout.judge(known[0], 40), (35, ["same voice as A"]))
+        self.assertEqual(scout.judge(known[1], 40), (50, ["farm voice (2 channels)"]))   # heard on two channels
+        self.assertEqual(scout.judge(known[1], 3), (0, []))              # hardly anyone talking: music, not a voice
+        self.assertEqual(scout.judge(known[1], None)[0], 50)             # no captions to tell: go by the voice
+        self.assertEqual(scout.judge(None, 40), (0, []))
+
+    @unittest.skipUnless(os.path.isfile(scout.MODEL), "voice model not downloaded")
+    def test_model(self):
+        a = scout.voiceprint(tone(170, 6))
+        self.assertLess(scout.voice_gap(a, scout.voiceprint(tone(170, 6)[::-1].copy())), 0.3)
+        self.assertEqual(len(a), 512)
+
+
+class Learn(unittest.TestCase):
     def test_learn_and_load(self):
         path = os.path.join(tempfile.mkdtemp(), "voices.json")
-        self.assertEqual(scout.load_voices(path), [])                                           # none yet
-        self.assertEqual(scout.learn_voice("a", {"pitch": 170, "tone": [0] * 13}, path), 1)
-        self.assertEqual(scout.learn_voice("b", {"pitch": 120, "tone": [0] * 13}, path), 2)
-        self.assertEqual(scout.learn_voice("a", {"pitch": 171, "tone": [0] * 13}, path), 2)     # same name replaces
-        self.assertEqual({v["name"]: v["pitch"] for v in scout.load_voices(path)}, {"a": 171, "b": 120})
-        self.assertRegex(scout.load_voices(path)[0]["learned"], r"^\d{4}-\d\d-\d\d$")         # when it was learned
+        self.assertEqual(scout.load_voices(path), [])
+        self.assertEqual(scout.learn_voice("v1", vp(1), "Chan A", path), ("v1", 1))
+        self.assertEqual(scout.learn_voice("v2", vp(2), "Chan B", path), ("v2", 2))
+        self.assertEqual(scout.learn_voice("v3", vp(1), "Chan C", path), ("v1", 2))   # same voice: its channel added
+        self.assertEqual(scout.learn_voice("v4", vp(1), "Chan C", path), ("v1", 2))   # ...once
+        v1 = scout.load_voices(path)[0]
+        self.assertEqual(v1["channels"], ["Chan A", "Chan C"])
+        self.assertRegex(v1["learned"], r"^\d{4}-\d\d-\d\d$")
+
+    def test_old_voices_skipped(self):
+        path = os.path.join(tempfile.mkdtemp(), "voices.json")
+        with open(path, "w") as f:
+            json.dump({"voices": [{"name": "old", "pitch": 170.2, "tone": [0] * 13}]}, f)
+        self.assertEqual(scout.load_voices(path), [])
 
 
-class Captions(unittest.TestCase):
-    def test_word_by_word(self):
-        fps = scout.CFPS
-        words = [picture(10 + (i // 3 % 2) * 30) for i in range(fps * 10)]   # a new word every 3 pictures
-        c = scout.caption_facts(words)
-        self.assertGreater(c["on"], 0.9)
-        self.assertGreater(c["per_sec"], 1.5)
-        self.assertEqual(scout.judge(c, None), (15, ["word-by-word captions"]))
+class Sound(unittest.TestCase):
+    def setUp(self):
+        self.keep = scout.get
 
-    def test_none_or_still(self):
-        self.assertEqual(scout.caption_facts([picture()] * scout.CFPS * 10)["on"], 0)      # no yellow at all
-        still = scout.caption_facts([picture(20)] * scout.CFPS * 10)                       # a yellow logo that never changes
-        self.assertEqual(still["per_sec"], 0)
-        self.assertEqual(scout.judge(still, None), (0, []))
-        self.assertIsNone(scout.caption_facts([picture(20)] * 10))                         # too short
+    def tearDown(self):
+        scout.get = self.keep
+
+    def test_start_of_sound(self):
+        asked = []
+        scout.get = lambda url, timeout=15: asked.append(url) or b"data"
+        j = {"streamingData": {"adaptiveFormats": [
+            {"mimeType": "audio/mp4", "bitrate": 130000, "contentLength": "900000", "url": "big?x=1"},
+            {"mimeType": "audio/mp4", "bitrate": 32000, "contentLength": "400000", "url": "small?x=1",
+             "audioTrack": {"displayName": "English (US) original", "audioIsDefault": True}},
+            {"mimeType": "audio/mp4", "bitrate": 31000, "contentLength": "400000", "url": "dub?x=1",
+             "audioTrack": {"displayName": "Spanish (US)", "audioIsDefault": False}},             # an AI dub
+            {"mimeType": "audio/mp4", "bitrate": 30000, "contentLength": "400000", "url": "drc?x=1", "isDrc": True},
+            {"mimeType": "audio/webm", "bitrate": 20000, "url": "webm?x=1"},
+            {"mimeType": "video/mp4", "bitrate": 10000, "url": "video?x=1"}]}}
+        self.assertEqual(scout.start_of_sound(j, 15), b"data")
+        self.assertEqual(asked, ["small?x=1&range=0-99999"])            # smallest mp4 sound, first 20 s + header
+        with self.assertRaises(RuntimeError):
+            scout.start_of_sound({"playabilityStatus": {"reason": "Video unavailable"}})
+
+    def test_words(self):
+        j3 = json.dumps({"events": [{"tStartMs": 0, "segs": [{"utf8": "in this"}, {"utf8": " world"}]},
+                                    {"tStartMs": 14000, "segs": [{"utf8": "everyone is"}]},
+                                    {"tStartMs": 16000, "segs": [{"utf8": "too late"}]}]})
+        self.assertEqual(scout.count_words(j3, 15), 5)
+        xml = '<timedtext><body><p t="0" d="900">in this world</p><p t="20000" d="900">later</p></body></timedtext>'
+        self.assertEqual(scout.count_words(xml, 15), 3)
+        self.assertIsNone(scout.spoken_words({"captions": {}}))
 
 
-class Judge(unittest.TestCase):
-    def test_weights(self):
-        caps = {"on": 0.9, "per_sec": 2.5}
-        self.assertEqual(scout.judge(caps, "farm"), (50, ["same voice as farm", "word-by-word captions"]))
-        self.assertEqual(scout.judge(None, "farm")[0], 35)
-        self.assertEqual(scout.judge({"on": 0.3, "per_sec": 2.5}, None)[0], 0)             # captions only now and then
-
+class Ids(unittest.TestCase):
     def test_video_id(self):
         self.assertEqual(scout.video_id("https://youtube.com/shorts/tbQTA6u4lEM?si=lBvmrsKKTj00cJ7z"), "tbQTA6u4lEM")
         self.assertEqual(scout.video_id("https://www.youtube.com/watch?v=tbQTA6u4lEM"), "tbQTA6u4lEM")
@@ -87,13 +128,14 @@ class Server(unittest.TestCase):
     def setUp(self):
         self.keep = scout.look, scout.VOICES
         scout.VOICES = os.path.join(tempfile.mkdtemp(), "voices.json")
-        scout.learn_voice("tbQTA6u4lEM", {"pitch": 170.2, "tone": [0] * 13})
+        scout.learn_voice("tbQTA6u4lEM", vp(1), "Drip Dyl")
         self.srv = scout.ThreadingHTTPServer(("127.0.0.1", 0), scout.Handler)
         threading.Thread(target=self.srv.serve_forever, daemon=True).start()
         self.base = f"http://127.0.0.1:{self.srv.server_port}"
 
     def tearDown(self):
         self.srv.shutdown()
+        self.srv.server_close()
         scout.look, scout.VOICES = self.keep
 
     def ask(self, path, body=None):
@@ -109,18 +151,18 @@ class Server(unittest.TestCase):
         code, st = self.ask("/status")
         self.assertEqual(code, 200)
         self.assertEqual(st["busy"], False)
-        self.assertEqual([(v["name"], v["pitch"]) for v in st["voices"]], [("tbQTA6u4lEM", 170)])
+        self.assertEqual([(v["name"], v["channels"]) for v in st["voices"]], [("tbQTA6u4lEM", 1)])
         self.assertRegex(st["voices"][0]["learned"], r"^[A-Z][a-z]{2} \d{1,2}$")              # e.g. "Nov 13"
 
     def test_look(self):
         def look(vid, voices=None):
             if vid == "gone0000000":
                 raise RuntimeError("Video unavailable")
-            return 50, ["same voice as x", "word-by-word captions"], "facts"
+            return 50, ["farm voice (2 channels)"], "facts"
         scout.look = look
         self.assertEqual(self.ask("/look", {"id": "tbQTA6u4lEM"}),
-                         (200, {"score": 50, "why": ["same voice as x", "word-by-word captions"], "facts": "facts"}))
-        self.assertEqual(self.ask("/look", {"id": "gone0000000"}), (502, {"error": "Video unavailable"}))   # couldn't watch
+                         (200, {"score": 50, "why": ["farm voice (2 channels)"], "facts": "facts"}))
+        self.assertEqual(self.ask("/look", {"id": "gone0000000"}), (502, {"error": "Video unavailable"}))
         self.assertEqual(self.ask("/look", {"id": "not an id"})[0], 400)
         self.assertEqual(self.ask("/look", {})[0], 400)
         self.assertEqual(self.ask("/nope")[0], 404)

@@ -1,40 +1,43 @@
 #!/usr/bin/env python3
-"""Scout: watches the Shorts YakTube is about to show and tells YakTube which ones come from content farms.
+"""Scout: listens to the Shorts YakTube is about to show and tells YakTube which ones come from content farms.
 
 Content farms are the faceless channels that turn out Shorts by the hundred from one formula to farm views and ad
 money. Being made with AI isn't what Scout looks for: plenty of people make clever, funny things with AI. What gives a
 farm away is the formula repeated, above all the same synthetic voice across channel after channel.
 
-Runs on any computer YakTube can reach (a Mac, an old Ubuntu PC), not on the NAS. Needs Python 3.9+, yt-dlp and
-ffmpeg; nothing else. It waits for YakTube to connect (put this computer's address in YakTube's Settings > Scout).
-YakTube hands it Shorts one at a time (POST /look); Scout downloads each at low quality and looks at the video itself:
-  - the voice: farms use the same text-to-speech voice again and again. Scout learns that voice from Shorts you know
-    are from a farm (`scout.py learn <link>`) and recognises it by its pitch and tone.
-  - the captions: one bold yellow word at a time, in the middle of the screen (a clue, not proof: people use them too)
-and answers with what it found. YakTube adds that to what it already read in the title and captions, and drops the
-Short from the Shorts list if the total is high enough. If this isn't running, YakTube just carries on with the
-title/caption check alone.
+Runs on any computer YakTube can reach (a Mac, an Ubuntu PC, a NAS with Docker). Needs Python 3.9+, ffmpeg, numpy,
+onnxruntime and the voice model in models/ (see the README); yt-dlp is only a backup. It waits for YakTube to connect
+(put this computer's address in YakTube's Settings > Scout). YakTube hands it Shorts one at a time (POST /look); for
+each, Scout fetches just the first 15 seconds of sound (about 80 KB) and:
+  - checks someone is talking (YouTube's own automatic captions for those seconds),
+  - turns the voice into a voiceprint with a speaker-recognition model (CAM++, trained to tell people's voices apart),
+  - compares it with the voices it has learned from Shorts known to be from farms (`scout.py learn <link>`).
+A voice heard on two or more channels counts for more: that's the farm's tell. YakTube adds Scout's score to what it
+already read in the title and captions, and drops the Short if the total is high enough. If Scout isn't running,
+YakTube just carries on with the title/caption check alone.
 
     python3 scout.py                       wait for YakTube (port 8095; --port to change it)
     python3 scout.py check <link or id>    show what Scout makes of a Short (YakTube isn't told)
     python3 scout.py learn <link or id>    this Short is from a farm: remember its voice
 """
-import argparse, array, json, math, os, re, shutil, statistics, subprocess, sys, tempfile, threading, time
-import urllib.parse
+import argparse, json, os, re, shutil, subprocess, sys, tempfile, threading, time
+import urllib.parse, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 VOICES = os.environ.get("SCOUT_VOICES", os.path.join(HERE, "voices.json"))   # voices learned from known farm Shorts
+MODEL = os.environ.get("SCOUT_MODEL", os.path.join(HERE, "models", "3dspeaker_speech_campplus_sv_en_voxceleb_16k.onnx"))
 PORT = int(os.environ.get("SCOUT_PORT", "8095"))                                # where YakTube finds it
-VERSION = "0.2"
-RATE = 8000                # sound looked at in this many samples a second
-CFPS, CW, CH = 8, 72, 128  # pictures for the caption check: 8 a second, shrunk to 72 x 128 pixels
+VERSION = "0.3"
 VID_RE = re.compile(r"(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{11}(?![A-Za-z0-9_-])")
 
-VOICE_PITCH = 0.05         # a voice matches a learned one if its pitch is within this many octaves (0.05 = 3.5%)...
-VOICE_TONE = 3.2           # ...and its tone (average loudness across the pitch range) is within this many dB
-SCORE_VOICE, SCORE_CAPTIONS = 35, 15
-BANDS = [200, 300, 400, 500, 650, 800, 1000, 1250, 1550, 1900, 2400, 3000, 3600]   # Hz, where tone is measured
+SR = 16000                 # sound looked at in this many samples a second
+LISTEN = 15                # seconds from the start of each Short (tested: as reliable as the whole Short)
+MIN_WORDS = 15             # spoken words needed in those seconds to judge a voice (music alone has its own "voice")
+VOICE_MATCH = 0.25         # voiceprints this close (1 - cosine) are the same voice. Tested on 131 Shorts: farm voices
+                           # 0.05-0.20 apart, every other Short 0.73 or more from them
+SCORE_VOICE, SCORE_SHARED = 35, 50   # a learned voice; one learned from two or more channels (a farm's tell)
+UA = "com.google.android.youtube/20.10.38 (Linux; U; Android 14) gzip"
 
 
 # ---------------------------------------------------------------- tools
@@ -58,177 +61,223 @@ def ytdlp():
         import yt_dlp  # noqa: F401
         return [sys.executable, "-m", "yt_dlp"]
     except ImportError:
-        sys.exit("yt-dlp not found. Install it: pip install yt-dlp (keep it up to date: YouTube changes often)")
+        return None
 
 
-def download(vid, folder):
-    """The Short, at the lowest quality there is, into `folder`. Returns the file's path."""
-    r = subprocess.run(ytdlp() + ["--no-playlist", "--quiet", "--no-warnings", "-f", "worstvideo*+worstaudio/worst",
-                                  "--merge-output-format", "mp4", "--ffmpeg-location", ffmpeg(), "--socket-timeout", "15",
-                                  "-o", os.path.join(folder, "%(id)s.%(ext)s"), "https://www.youtube.com/shorts/" + vid],
-                       capture_output=True, text=True, timeout=300)
+# ---------------------------------------------------------------- getting the sound
+def player(vid):
+    """YouTube's answer for one Short as its Android app asks for it (no login): details, sound links, captions."""
+    body = {"context": {"client": {"clientName": "ANDROID", "clientVersion": "20.10.38", "androidSdkVersion": 34,
+                                   "osName": "Android", "osVersion": "14", "hl": "en", "gl": "US"}}, "videoId": vid}
+    req = urllib.request.Request("https://www.youtube.com/youtubei/v1/player?prettyPrint=false", json.dumps(body).encode(),
+                                 {"Content-Type": "application/json", "User-Agent": UA,
+                                  "X-YouTube-Client-Name": "3", "X-YouTube-Client-Version": "20.10.38"})
+    with urllib.request.urlopen(req, timeout=15) as r:
+        return json.loads(r.read())
+
+
+def get(url, timeout=15):
+    with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": UA}), timeout=timeout) as r:
+        return r.read()
+
+
+def start_of_sound(j, secs=LISTEN):
+    """The first `secs` seconds of the Short's smallest sound file (bytes), from a player() answer. YouTube only
+    hands out the start of a file this way, never the whole of it, which is all Scout wants."""
+    fm = [f for f in j.get("streamingData", {}).get("adaptiveFormats", [])
+          if f.get("mimeType", "").startswith("audio/mp4") and f.get("url")
+          and f.get("audioTrack", {}).get("audioIsDefault", True) and not f.get("isDrc")]   # the original voice, not
+    if not fm:                                                                             # one of YouTube's AI dubs
+        raise RuntimeError(j.get("playabilityStatus", {}).get("reason") or "no sound to fetch")
+    f = min(fm, key=lambda f: f.get("bitrate", 1 << 30))
+    n = int(f.get("bitrate", 130000) / 8 * (secs + 5)) + 20000                  # a few seconds spare, plus the header
+    if f.get("contentLength"):
+        n = min(n, int(f["contentLength"]) - 1)
+    return get(f["url"] + f"&range=0-{n - 1}")
+
+
+def spoken_words(j, secs=LISTEN):
+    """How many words YouTube's automatic captions hear in the first `secs` seconds; None if it has none."""
+    tracks = j.get("captions", {}).get("playerCaptionsTracklistRenderer", {}).get("captionTracks", [])
+    asr = [t for t in tracks if t.get("kind") == "asr" and t.get("baseUrl")]
+    if not asr:
+        return None
+    return count_words(get(asr[0]["baseUrl"] + "&fmt=json3").decode("utf-8", "replace"), secs)
+
+
+def count_words(text, secs):
+    """Words starting before `secs` seconds in a captions file (json3, or the XML YouTube sometimes sends instead)."""
+    try:
+        ev = json.loads(text).get("events", [])
+        return sum(len("".join(s.get("utf8", "") for s in e.get("segs", [])).split())
+                   for e in ev if e.get("tStartMs", 0) < secs * 1000)
+    except ValueError:
+        return sum(len(re.sub(r"<[^>]+>", " ", body).split())
+                   for t, body in re.findall(r'<p t="(\d+)"[^>]*>(.*?)</p>', text, re.S) if int(t) < secs * 1000)
+
+
+def decode(data_or_path, secs=LISTEN):
+    """Sound (bytes of a file, or a path) as numbers between -1 and 1, SR a second, mono, the first `secs` seconds."""
+    import numpy as np
+    src = ["-i", data_or_path] if isinstance(data_or_path, str) else ["-i", "pipe:0"]
+    out = subprocess.run([ffmpeg(), "-v", "error"] + src + ["-t", str(secs), "-vn", "-ac", "1", "-ar", str(SR),
+                                                          "-f", "s16le", "-"],
+                         input=None if isinstance(data_or_path, str) else data_or_path, capture_output=True,
+                         timeout=60).stdout
+    return np.frombuffer(out[:len(out) // 2 * 2], dtype="<i2").astype(np.float32) / 32768
+
+
+def download_start(vid, folder, secs=LISTEN):
+    """Backup when YouTube won't hand the sound over directly: yt-dlp fetches the first seconds of it."""
+    cmd = ytdlp()
+    if not cmd:
+        raise RuntimeError("couldn't fetch the sound, and yt-dlp (the backup) isn't installed")
+    r = subprocess.run(cmd + ["--no-playlist", "--quiet", "--no-warnings", "-f", "worstaudio/worst",
+                              "--download-sections", f"*0-{secs + 2}", "--ffmpeg-location", ffmpeg(),
+                              "--socket-timeout", "15", "-o", os.path.join(folder, "%(id)s.%(ext)s"),
+                              "https://www.youtube.com/shorts/" + vid], capture_output=True, text=True, timeout=300)
     files = [f for f in os.listdir(folder) if f.startswith(vid)]
     if r.returncode or not files:
         raise RuntimeError((r.stderr.strip().splitlines() or ["download failed"])[-1][:200])
     return os.path.join(folder, files[0])
 
 
-def frames(path):
-    """The video as small colour pictures, CFPS a second: a list of CW*CH*3-byte strings (red, green, blue...)."""
-    out = subprocess.run([ffmpeg(), "-v", "error", "-i", path, "-an", "-vf", f"fps={CFPS},scale={CW}:{CH}",
-                          "-pix_fmt", "rgb24", "-f", "rawvideo", "-"], capture_output=True, timeout=180).stdout
-    n = CW * CH * 3
-    return [out[i:i + n] for i in range(0, len(out) - n + 1, n)]
+def hear(vid):
+    """(sound of the first LISTEN seconds, spoken words in them or None if unknown, channel name)."""
+    try:
+        j = player(vid)
+        return decode(start_of_sound(j)), spoken_words(j), j.get("videoDetails", {}).get("author", "")
+    except Exception:
+        folder = tempfile.mkdtemp(prefix="scout-")
+        try:
+            return decode(download_start(vid, folder)), None, ""
+        finally:
+            shutil.rmtree(folder, ignore_errors=True)
 
 
-def samples(path):
-    """The sound as mono 16-bit numbers at RATE a second (empty if there isn't any)."""
-    out = subprocess.run([ffmpeg(), "-v", "error", "-i", path, "-vn", "-ac", "1", "-ar", str(RATE), "-f", "s16le", "-"],
-                         capture_output=True, timeout=180).stdout
-    a = array.array("h")
-    a.frombytes(out[:len(out) // 2 * 2])
-    if sys.byteorder == "big":
-        a.byteswap()
-    return a
+# ---------------------------------------------------------------- voiceprints
+_MODEL, _FB = None, None
 
 
-# ---------------------------------------------------------------- looking (pure functions, no files)
-def caption_facts(fr, fps=CFPS):
-    """Bold yellow word-by-word captions: how much of the time there are yellow letters in the middle of the screen,
-    and how often they change. None if the video is too short."""
-    if len(fr) < fps * 8:
+def model():
+    global _MODEL
+    if _MODEL is None:
+        if not os.path.isfile(MODEL):
+            sys.exit(f"The voice model isn't there: {MODEL}\nDownload it (see the README), or set SCOUT_MODEL.")
+        import onnxruntime as ort
+        o = ort.SessionOptions()
+        o.intra_op_num_threads = 2
+        o.log_severity_level = 3
+        _MODEL = ort.InferenceSession(MODEL, o, providers=["CPUExecutionProvider"])
+    return _MODEL
+
+
+def fbank(a):
+    """The sound as 80 loudness bands every 10 ms (the Kaldi "fbank" the model was trained on)."""
+    import numpy as np
+    global _FB
+    n, hop, nfft = 400, 160, 512
+    if _FB is None:
+        mel = lambda f: 1127 * np.log(1 + f / 700)
+        c = np.linspace(mel(20), mel(SR / 2), 82)
+        fm = mel(np.arange(nfft // 2 + 1) * SR / nfft)
+        _FB = np.stack([np.clip(np.minimum((fm - c[i]) / (c[i + 1] - c[i]), (c[i + 2] - fm) / (c[i + 2] - c[i + 1])), 0, None)
+                        for i in range(80)]).astype(np.float32)
+    if len(a) < n:
+        return np.zeros((0, 80), np.float32)
+    idx = np.arange(0, len(a) - n + 1, hop)
+    fr = a[idx[:, None] + np.arange(n)]
+    fr = fr - fr.mean(1, keepdims=True)
+    fr = np.concatenate([fr[:, :1] * 0.03, fr[:, 1:] - 0.97 * fr[:, :-1]], 1)
+    fr = fr * (0.5 - 0.5 * np.cos(2 * np.pi * np.arange(n) / (n - 1))) ** 0.85
+    p = np.abs(np.fft.rfft(fr, nfft, axis=1)) ** 2
+    return np.log(np.maximum(p @ _FB.T, np.finfo(np.float32).eps)).astype(np.float32)
+
+
+def voiceprint(a, run=None):
+    """512 numbers that describe the voice (unit length), or None if there's under 2 seconds of sound. The model is
+    fed 2-second pieces, a second apart, and the answers averaged: it was built for exactly that length, and longer
+    pieces make it unreliable."""
+    import numpy as np
+    run = run or (lambda x: model().run(None, {"x": x})[0][0])
+    f, w = fbank(a), 200
+    if len(f) < w:
         return None
-    on, changes, prev = 0, 0, None
-    for f in fr:
-        pts = set()
-        for y in range(int(CH * .35), int(CH * .8)):
-            row = y * CW * 3
-            for x in range(CW):
-                i = row + x * 3
-                if f[i] > 190 and f[i + 1] > 170 and f[i + 2] < 100:        # yellow
-                    pts.add((x, y))
-        if 6 <= len(pts) <= 600:                                             # a few words, not a yellow wall
-            on += 1
-            if prev is not None and len(pts & prev) < 0.5 * min(len(pts), len(prev)):
-                changes += 1                                                 # different letters from a moment ago
-            prev = pts
-        else:
-            prev = None
-    return {"on": on / len(fr), "per_sec": changes / (len(fr) / fps)}
-
-
-def rms(chunk):
-    return (sum(x * x for x in chunk) / len(chunk)) ** 0.5
-
-
-def _goertzel(fr, f):
-    w = 2 * math.cos(2 * math.pi * f / RATE)
-    s1 = s2 = 0.0
-    for x in fr:
-        s1, s2 = x + w * s1 - s2, s1
-    return s1 * s1 + s2 * s2 - w * s1 * s2
-
-
-def _pitch(fr):
-    """The voice's pitch in Hz for one 64 ms stretch (0 if it isn't a clear voiced sound)."""
-    e = sum(x * x for x in fr)
-    if not e:
-        return 0
-    best, at = 0.0, 0
-    for lag in range(20, 161):                                               # 400 Hz down to 50 Hz
-        c = sum(map(float.__mul__, fr[:len(fr) - lag], fr[lag:])) / e
-        if c > best:
-            best, at = c, lag
-    return RATE / at if best > 0.45 else 0
-
-
-def voice_profile(a):
-    """A voice's fingerprint: its usual pitch and its tone (how loud each part of the range is, relative to the
-    whole). None if there is hardly any speech."""
-    n = 512
-    speech = [i for i in range(0, len(a) - n, n) if rms(a[i:i + n]) > 800]
-    if len(speech) < 20:
-        return None
-    pitches, tone = [], [0.0] * len(BANDS)
-    pick = speech[::max(1, len(speech) // 60)][:60]
-    for i in pick:
-        fr = [float(x) for x in a[i:i + n]]
-        m = sum(fr) / n
-        fr = [(x - m) * (0.5 - 0.5 * math.cos(2 * math.pi * k / (n - 1))) for k, x in enumerate(fr)]   # smoothed edges
-        p = _pitch(fr)
-        if p:
-            pitches.append(p)
-        for k, b in enumerate(BANDS):                                       # each band: 5 points across a 1/3 octave,
-            tone[k] += math.log10(sum(_goertzel(fr, b * 2 ** (j / 12)) for j in (-2, -1, 0, 1, 2)) + 1e-9)   # so a harmonic
-                                                                               # landing between them doesn't swing it
-    if len(pitches) < 10:
-        return None
-    mean = sum(tone) / len(tone)
-    return {"pitch": round(statistics.median(pitches), 1), "tone": [round(10 * (t / len(pick) - mean / len(pick)), 1) for t in tone]}
+    vs = []
+    for s in range(0, len(f) - w + 1, 100):
+        v = run((f[s:s + w] - f[s:s + w].mean(0))[None])
+        vs.append(v / np.linalg.norm(v))
+    m = np.mean(vs, 0)
+    return m / np.linalg.norm(m)
 
 
 def voice_gap(p, q):
-    """(tone difference in dB, pitch difference in octaves) between two voice fingerprints."""
-    return (math.sqrt(sum((x - y) ** 2 for x, y in zip(p["tone"], q["tone"])) / len(BANDS)),
-            abs(math.log2(p["pitch"] / q["pitch"])))
+    """How different two voiceprints are: 0 the same, 1 unrelated."""
+    return 1 - sum(x * y for x, y in zip(p, q))
 
 
 def voice_match(p, known):
-    """The learned voice this one matches, or None. `known` is a list of {"name", "pitch", "tone"}."""
-    if not p:
-        return None
-    for k in known:
-        tone, pitch = voice_gap(p, k)
-        if pitch <= VOICE_PITCH and tone <= VOICE_TONE:
-            return k["name"]
-    return None
+    """(the learned voice this one matches, gap) or (None, gap to the nearest). `known` = [{"name", "print", ...}]."""
+    if p is None or not known:
+        return None, None
+    gap, best = min((voice_gap(p, k["print"]), i) for i, k in enumerate(known))
+    return (known[best] if gap <= VOICE_MATCH else None), gap
 
 
-def judge(caps, voice):
-    """(score 0-100, reasons) from caption_facts and the name of the learned voice it matched (or None). Neither is
-    proof alone: YakTube adds this to its own score and only drops a Short when the total is high enough."""
-    hits = []
-    if voice:
-        hits.append((SCORE_VOICE, f"same voice as {voice}"))
-    if caps and caps["on"] >= 0.5 and caps["per_sec"] >= 1.5:
-        hits.append((SCORE_CAPTIONS, "word-by-word captions"))
-    return min(100, sum(n for n, _ in hits)), [w for _, w in hits]
+def judge(voice, words):
+    """(score 0-100, reasons) from the learned voice matched (or None). Not proof alone: YakTube adds this to its own
+    score and only drops a Short when the total is high enough."""
+    if not voice or (words is not None and words < MIN_WORDS):
+        return 0, []
+    channels = voice.get("channels", [])
+    if len(channels) >= 2:
+        return SCORE_SHARED, [f"farm voice ({len(channels)} channels)"]
+    return SCORE_VOICE, [f"same voice as {voice['name']}"]
 
 
+# ---------------------------------------------------------------- learned voices
 def load_voices(path=None):
+    """Learned voices. Ones from before version 0.3 (pitch and tone, no voiceprint) can't be used and are skipped."""
     try:
         with open(path or VOICES) as f:
-            return json.load(f).get("voices", [])
+            return [v for v in json.load(f).get("voices", []) if len(v.get("print", [])) > 100]
     except (OSError, ValueError):
         return []
 
 
-def learn_voice(name, profile, path=None):
-    """Remember a voice from a Short known to be from a farm (replacing an earlier one of the same name)."""
+def learn_voice(name, vp, channel="", path=None):
+    """Remember a voice from a Short known to be from a farm. If it's a voice already known, the channel is added to
+    it instead (a voice on several channels counts for more). Returns (the voice's name, how many are known)."""
     path = path or VOICES
-    voices = [v for v in load_voices(path) if v["name"] != name] + [dict(profile, name=name, learned=time.strftime("%Y-%m-%d"))]
-    with open(path, "w") as f:
-        json.dump({"voices": voices}, f, indent=1)
-    return len(voices)
+    voices = load_voices(path)
+    same, _ = voice_match(vp, voices)
+    if same:
+        if channel and channel not in same.setdefault("channels", []):
+            same["channels"].append(channel)
+        name = same["name"]
+    else:
+        voices.append({"name": name, "learned": time.strftime("%Y-%m-%d"), "channels": [channel] if channel else [],
+                       "print": [round(float(x), 5) for x in vp]})
+    tmp = path + ".new"
+    with open(tmp, "w") as f:
+        json.dump({"voices": voices}, f)
+    os.replace(tmp, path)
+    return name, len(voices)
 
 
 def look(vid, voices=None):
-    """Download one Short, look at it, delete it. (score, reasons, facts line)."""
-    folder = tempfile.mkdtemp(prefix="scout-")
-    try:
-        path = download(vid, folder)
-        caps, prof = caption_facts(frames(path)), voice_profile(samples(path))
-        who = voice_match(prof, load_voices() if voices is None else voices)
-        score, why = judge(caps, who)
-        facts = (f"captions {caps['on']:.0%} on, {caps['per_sec']:.1f}/s" if caps else "too short") + \
-                (f" | voice {prof['pitch']:.0f} Hz" if prof else " | no voice")
-        return score, why, facts
-    finally:
-        shutil.rmtree(folder, ignore_errors=True)
+    """Listen to the start of one Short. (score, reasons, facts line)."""
+    sound, words, _ = hear(vid)
+    vp = voiceprint(sound)
+    who, gap = voice_match(vp, load_voices() if voices is None else voices)
+    score, why = judge(who, words)
+    facts = ("no voice" if vp is None else f"nearest voice {gap:.2f}" if gap is not None else "voice") + \
+            ("" if words is None else f" | {words} words")
+    return score, why, facts
 
 
 # ---------------------------------------------------------------- waiting for YakTube
-LOOKING = threading.Lock()                                    # one Short at a time: it's the download that's slow
+LOOKING = threading.Lock()                                    # one Short at a time
 
 
 def status():
@@ -239,7 +288,7 @@ def status():
         except ValueError:
             return ""
     return {"scout": VERSION, "busy": LOOKING.locked(),
-            "voices": [{"name": v["name"], "pitch": round(v["pitch"]), "learned": when(v)} for v in load_voices()]}
+            "voices": [{"name": v["name"], "learned": when(v), "channels": len(v.get("channels", []))} for v in load_voices()]}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -267,12 +316,13 @@ class Handler(BaseHTTPRequestHandler):
         if not (isinstance(vid, str) and VID_RE.fullmatch(vid)):
             return self.reply(400, {"error": "need an id"})
         with LOOKING:
+            t = time.time()
             try:
                 score, why, facts = look(vid)
-            except Exception as ex:                             # couldn't download or read it
-                print(f"[scout] {vid}: couldn't look ({ex})", flush=True)
+            except Exception as ex:                             # couldn't fetch or read it
+                print(f"[scout] {vid}: couldn't listen ({ex})", flush=True)
                 return self.reply(502, {"error": str(ex)[:200]})
-        print(f"[scout] {vid} {score:3d}  {'; '.join(why) or '-'}  [{facts}]", flush=True)
+        print(f"[scout] {vid} {score:3d}  {'; '.join(why) or '-'}  [{facts} | {time.time() - t:.1f}s]", flush=True)
         self.reply(200, {"score": score, "why": why, "facts": facts})
 
     def log_message(self, fmt, *args):
@@ -280,6 +330,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def serve(host, port):
+    model()                                                   # say now if the model is missing, not at the first Short
     srv = ThreadingHTTPServer((host, port), Handler)
     print(f"Scout {VERSION} waiting for YakTube on port {port}. In YakTube: Settings > Scout, this computer's address.",
           flush=True)
@@ -296,7 +347,7 @@ def video_id(s):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Tell YakTube which Shorts come from content farms, by watching them.")
+    ap = argparse.ArgumentParser(description="Tell YakTube which Shorts come from content farms, by their voices.")
     ap.add_argument("what", nargs="*", help="'check <link>...' or 'learn <link>...' (leave out to wait for YakTube)")
     ap.add_argument("--port", type=int, default=PORT, help=f"port YakTube connects to (default {PORT})")
     ap.add_argument("--host", default="0.0.0.0", help="address to listen on (default: all, so YakTube can reach it)")
@@ -315,19 +366,17 @@ def main():
             if cmd == "check":
                 score, why, facts = look(vid)
                 print(f"{vid} {score:3d}  {'; '.join(why) or '-'}  [{facts}]")
-            else:
-                folder = tempfile.mkdtemp(prefix="scout-")
-                try:
-                    prof = voice_profile(samples(download(vid, folder)))
-                finally:
-                    shutil.rmtree(folder, ignore_errors=True)
-                if not prof:
-                    print(f"{vid}: not enough speech to learn a voice from")
-                else:
-                    n = learn_voice(vid, prof)
-                    print(f"{vid}: learned a voice at {prof['pitch']:.0f} Hz ({n} known in {VOICES})")
+                continue
+            sound, words, channel = hear(vid)
+            vp = voiceprint(sound)
+            if vp is None or (words is not None and words < MIN_WORDS):
+                print(f"{vid}: not enough talking at the start to learn a voice from")
+                continue
+            name, n = learn_voice(vid, vp, channel)
+            print(f"{vid}: " + (f"learned a new voice ({n} known)" if name == vid else f"same voice as {name}") +
+                  (f", {channel}" if channel else "") + f" ({VOICES})")
         except Exception as ex:
-            print(f"{vid}: couldn't look ({ex})")
+            print(f"{vid}: couldn't listen ({ex})")
 
 
 if __name__ == "__main__":
