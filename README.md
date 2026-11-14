@@ -1,84 +1,145 @@
 # YakScout
 
-An optional companion for [YakTube](https://github.com/glenndall/yaktube) that keeps content-farm Shorts out of its
-Shorts list by **listening** to them: the faceless channels that churn out Shorts from one formula to farm views and ad
-money. Being made with AI isn't what it looks for (people make clever, funny things with AI); the formula is, above all
-the same synthetic voice on channel after channel. YakTube already reads each Short's title, description and captions;
-Scout adds what it hears. YakTube works the same without it.
+## 1. Overview & Purpose
 
-Run it on any computer YakTube can reach: a Mac, an Ubuntu PC, or the NAS. It waits for YakTube to connect; you tell
-YakTube where it is in **Settings → Scout**. When it's off (the Mac asleep), YakTube just goes on with its own check,
-and Scout catches up when it's back.
+- **What it is:** an optional companion service for [YakTube](https://github.com/glenndall/yaktube) that finds and
+  filters out content-farm Shorts: the faceless channels that churn out Shorts from one formula, with the same
+  synthetic voice, to farm views and ad revenue. Being made with AI isn't what it looks for (people make clever, funny
+  things with AI); the repeated formula is.
+- **How it works:** YakTube reviews each Short's title, description and captions; YakScout listens to its audio and
+  adds what it hears to YakTube's score.
+- **Flexibility:** YakScout runs on its own, in Docker (on a NAS or server) or directly on a Mac or Ubuntu machine.
+  YakTube works normally while YakScout is offline, and YakScout catches up when it's back.
 
-## How it listens
-For each Short, Scout fetches only the first 15 seconds of its sound (about 80 KB, straight from YouTube, the original
-voice, never one of YouTube's AI dubs), and:
-1. **Checks someone is talking.** YouTube's automatic captions must hear at least 15 words in those seconds; music on
-   its own has a "voice" too, and Scout leaves it alone.
-2. **Takes a voiceprint** with a speaker-recognition model (CAM++, from 3D-Speaker, trained to tell people's voices
-   apart through noise and music), fed 2-second pieces and averaged.
-3. **Compares it** with the voices it has learned from Shorts known to be from farms.
+## 2. How the Audio Analysis Works
 
-About 2 seconds a Short on a 2020 MacBook (half of it waiting for YouTube). yt-dlp is only a backup for when
-YouTube won't hand the sound over directly.
+For each Short, YakScout fetches only the first 15 seconds of the original audio (about 80 KB, never one of YouTube's
+AI-dubbed tracks) and runs three steps:
 
-| Scout heard | Score |
+1. **Speech check:** someone must actually be talking (at least 15 words in YouTube's automatic captions for those
+   seconds), so music on its own is left alone.
+2. **Voiceprint:** a speaker-recognition model (CAM++ from 3D-Speaker) turns the voice into a voiceprint, fed in
+   2-second pieces and averaged.
+3. **Comparison:** the voiceprint is compared with the farm voices YakScout has learned.
+
+About 2 seconds a Short on a 2020 MacBook, about 4 on a Synology DS220+. yt-dlp is only a backup for when YouTube
+won't hand the audio over directly.
+
+**Scoring & thresholds**
+
+| YakScout heard | Points |
 |---|---|
-| A learned voice | +35 |
-| A learned voice that's on 2 or more channels (a farm's tell) | +50 |
+| A learned farm voice | +35 |
+| A learned farm voice heard on 2 or more channels | +50 (drops a Short by itself) |
 
-YakTube adds this to its own score and drops the Short once the total reaches 50 (`YAK_SCOUT_MIN`). So a voice heard on
-several farm channels drops a Short by itself; a voice from one channel needs one more clue.
+YakTube adds these to its own score and drops a Short once the total reaches 50 (`YAK_SCOUT_MIN`, or **Drop at** in
+YakTube's settings).
 
-**How sure is it?** Tested on 131 Shorts (Nov 2026). Farm Shorts sharing a voice came out 0.05-0.20 apart; every
-other Short was 0.73 or more from them, against a match limit of 0.25. Learning 7 farm Shorts caught 6 of the 8 other
-farm Shorts in the set and 4 more farm Shorts found among the rest, and none of 37 ordinary Shorts. Still a small
-sample: check the log, and if a voice catches the wrong Shorts, take it out of `voices.json`.
+**How sure is it?** Tested on 131 Shorts (Nov 2026): farm Shorts sharing a voice came out 0.05-0.20 apart, every other
+Short 0.73 or more from them, against a match limit of 0.25. Learning 7 farm Shorts caught 6 of the 8 other farm
+Shorts in the set and 4 more found among the rest, and none of 37 ordinary Shorts. Still a small sample: check the
+log, and if a voice catches the wrong Shorts, forget it.
 
-## Set it up
-It needs Python 3.9+, ffmpeg, numpy, onnxruntime, and the voice model (29 MB).
+## 3. Installation & Deployment Options
 
-**Mac:**
+**Docker (Synology NAS or any server)**
+1. Copy `Dockerfile`, `docker-compose.yml`, `scout.py`, `get_model.py` and `voices.json` into a folder of their own,
+   e.g. `/volume1/NAS/yakscout`.
+2. Inside it, create an empty folder named `data` (File Station → Create folder). Container Manager won't start the
+   project without it; learned voices live there.
+3. Synology: Container Manager → Project → Create → pick the folder → it finds `docker-compose.yml` → Next → Done.
+   Elsewhere: `docker compose up -d --build` in the folder. The first start builds the image, which takes a few
+   minutes (it downloads Python's libraries and the 29 MB voice model). The container shows **Healthy** once
+   YakScout answers on port `8095`.
+
+YakScout and YakTube can start or restart in any order: until YakScout answers, YakTube shows **Can't reach** and
+tries again every minute. To update YakScout, replace `scout.py` and restart the project; rebuild (Action → Build)
+only for a new `Dockerfile` or to bring yt-dlp up to date.
+
+**macOS (standalone)**
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
-mkdir -p models && curl -L -o models/3dspeaker_speech_campplus_sv_en_voxceleb_16k.onnx \
-  https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/3dspeaker_speech_campplus_sv_en_voxceleb_16k.onnx
+.venv/bin/python get_model.py
 ```
-Optional backup: `curl -L -o .venv/bin/yt-dlp https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos && chmod +x .venv/bin/yt-dlp`.
+Optional backup downloader: `curl -L -o .venv/bin/yt-dlp https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos && chmod +x .venv/bin/yt-dlp`
 
-**Ubuntu:**
+**Ubuntu (standalone, without Docker)**
 ```bash
 sudo apt install python3 python3-venv ffmpeg
 python3 -m venv .venv
 .venv/bin/pip install numpy onnxruntime yt-dlp
+.venv/bin/python get_model.py
 ```
-then the same `models/` download as above. If the firewall is on, let YakTube in: `sudo ufw allow 8095/tcp`.
+If the firewall is on, let YakTube in: `sudo ufw allow 8095/tcp`.
 
-## Use it
+## 4. Usage & Teaching the System
+
+**Core commands**
 ```bash
-.venv/bin/python scout.py                                      # wait for YakTube on port 8095
-.venv/bin/python scout.py learn https://youtube.com/shorts/... # this one is from a farm: remember its voice
-.venv/bin/python scout.py check https://youtube.com/shorts/... # what Scout makes of one (YakTube isn't told)
+.venv/bin/python scout.py                                      # listen for YakTube on port 8095
+.venv/bin/python scout.py learn https://youtube.com/shorts/... # this one is from a farm: learn its voice
+.venv/bin/python scout.py check https://youtube.com/shorts/... # what YakScout makes of one (YakTube isn't told)
 ```
-Then in YakTube: **Settings → Scout**, type this computer's address (e.g. `192.168.1.31`) and Save. The page shows
-**Connected** once YakTube reaches it. `--port` (or `SCOUT_PORT`) changes the port; change it in YakTube too.
+In Docker: Container Manager → Container → yakscout → Terminal → Create → `bash`, then `python scout.py learn <link>`
+(or `sudo docker exec yakscout python scout.py learn <link>` over SSH).
 
-Learning a Short whose voice Scout already knows adds its channel to that voice instead of making a new one; that's
-how a voice gets to "2 or more channels". Learned voices show in YakTube's Scout page; they're kept in `voices.json`
-next to `scout.py` (`SCOUT_VOICES` to keep them elsewhere; `SCOUT_MODEL` if the model lives somewhere else). Voices
-learned by Scout 0.2 (pitch and tone) can't be used any more: learn them again.
+- **Training:** teach YakScout a farm voice from the terminal (`learn`) or, easier, from YakTube: **Settings →
+  YakScout → Voices**, paste a link and **Learn**. Teaching a voice it already knows adds that channel to it instead
+  of making a duplicate; that's how a voice reaches "2 or more channels".
+- **Data storage:** learned voices are kept in `data/voices.json` (Docker) or `voices.json` next to `scout.py`, and
+  survive updates and rebuilds. `SCOUT_VOICES`, `SCOUT_MODEL` and `SCOUT_PORT` (or `--port`) move them, the model or
+  the port.
 
-## How YakTube talks to it
-- `GET /status`: `{"scout": version, "busy": true/false, "voices": [{"name", "learned", "channels"}]}`
-- `POST /look` with `{"id": "<video id>"}`: listens to that Short and answers `{"score": 0-100, "why": [...], "facts": "..."}`,
-  or `502 {"error": ...}` if it couldn't fetch it. One at a time.
+## 5. YakTube Integration & Management
 
-Neither has a login, so keep both on your home network, never open to the internet (see the YakTube README).
+In YakTube, open **Settings → YakScout** (under Plugins), enter YakScout's address (the NAS's own address, e.g.
+`192.168.1.20`) and port `8095`, and Save. The badge turns **Connected**, and the line under the address shows the
+plugin version, seconds per Short, the last scan and uptime. The counts at the top refresh by themselves.
+
+**How a Short is judged.** Each new Short gets a score from 0 to 100: **Titles & captions** (built into YakTube)
+adds points for farm clues in what it says about itself, **Scan voices** (YakScout) adds points for a farm voice. At
+**Drop at** (50 to start) the Short leaves the Shorts list. Two lists overrule the score: **Never drop** always wins,
+then **AI-Farm channels**.
+
+**Scoring & rules**
+- **Dropped:** what was taken out, and why (*Story*, *Voice*, *Channel*, *Pasted*, *Text*). **Bring back** returns
+  one for good.
+- **AI-Farm channels:** every Short from these is dropped unchecked. YakScout adds a channel itself once it has judged
+  3 or more of its Shorts and dropped over half; you can add one by name. **×** takes one off.
+- **Never drop:** channels that are always kept, whatever they score. Adding one brings its dropped Shorts back.
+- **Voices:** the learned farm voices and the channels each was heard on. **Learn** from a link; **×** forgets one.
+- **Advanced:** **Drop at** (30-90; lower catches more and risks more mistakes) and **Remember for** (30, 60 or 90
+  days, after which a Short is judged again; ones you brought back are always remembered).
+
+**Logs & backups**
+- **Log:** the last 100 verdicts, *Read* (titles & captions) or *Scanned* (YakScout listened too), with score and
+  reasons. **Download CSV** saves every verdict still remembered, for Numbers or Excel.
+- **Backup:** a `.zip` with `backup.json` (channel lists, Shorts you brought back, Advanced settings and, while
+  YakScout is connected, its learned voiceprints) and `log.csv`.
+- **Restore:** pick the `.zip` (or the `backup.json` inside it). It adds to what's there and removes nothing; voices
+  go back only while YakScout is connected.
+
+## 6. API Reference (For Integrations)
+
+YakScout answers plain HTTP with JSON on port `8095`:
+
+- `GET /status`: version, whether it's busy, uptime in seconds, and the learned voices (name, date learned, channels).
+- `POST /look` `{"id": "<video id>"}`: scores one Short: `{"score": 0-100, "why": [...], "facts": "..."}`, or `502`
+  if it couldn't fetch it. One at a time.
+- `POST /learn` `{"id": ...}`: learns that Short's voice: `{"name", "channels", "new"}`, or `422` if there's too
+  little talking.
+- `POST /forget` `{"name": ...}`: removes a learned voice.
+- `GET /voices` / `POST /voices` `{"voices": [...]}`: all learned voices with their voiceprints, and adding them back
+  (merged with what's there). YakTube's Backup and Restore use these.
+
+**Note:** there's no login. Keep YakScout (and YakTube) on your home network, never open to the internet.
 
 ## Tests
+
 `.venv/bin/python test_scout.py` (no network or downloads; the model test runs only if the model is there).
 
 ## Credits
+
 The voice model is CAM++ from Alibaba's [3D-Speaker](https://github.com/modelscope/3D-Speaker) (Apache 2.0), in the
 ONNX form published by [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx).

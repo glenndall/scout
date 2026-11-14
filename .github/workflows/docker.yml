@@ -1,0 +1,61 @@
+# Builds the Docker image the way a NAS would (docker compose, linux/amd64 like a DS220+), starts it, and checks it
+# answers, loads the voice model and passes the tests. Runs on changes to what goes into the image, or by hand.
+name: docker
+on:
+  push:
+    paths: [Dockerfile, docker-compose.yml, scout.py, get_model.py, voices.json, test_scout.py, .github/workflows/docker.yml]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        run: docker compose build
+
+      - name: Start
+        run: |
+          docker compose up -d
+          for i in $(seq 1 30); do
+            curl -sf http://127.0.0.1:8095/status && break
+            sleep 2
+          done
+          echo
+          curl -sf http://127.0.0.1:8095/status | python3 -c "import json,sys; s=json.load(sys.stdin); print(s); assert s['scout'] and len(s['voices']) >= 1"
+
+      - name: Learned voices copied to ./data on first start
+        run: test -s data/voices.json && ls -la data
+
+      - name: Voice model loads and makes a voiceprint
+        run: |
+          docker exec yakscout python -c "import numpy as np, scout; v = scout.voiceprint((np.random.default_rng(1).random(64000, dtype=np.float32) - .5) * .2); print('voiceprint', v.shape); assert v.shape == (512,)"
+
+      - name: Tests (inside the image, with the real model)
+        run: docker run --rm -v "$PWD:/src" -w /src -e SCOUT_MODEL=/app/models/3dspeaker_speech_campplus_sv_en_voxceleb_16k.onnx yakscout:local python test_scout.py
+
+      - name: Health check turns healthy
+        run: |
+          for i in $(seq 1 10); do
+            s=$(docker inspect -f '{{.State.Health.Status}}' yakscout); echo "$s"
+            [ "$s" = healthy ] && exit 0
+            sleep 10
+          done
+          exit 1
+
+      - name: Size
+        run: docker image ls yakscout:local
+
+      - name: Listen to a real Short (YouTube may refuse data-centre addresses, so this one may fail)
+        continue-on-error: true
+        run: docker exec yakscout python scout.py check tbQTA6u4lEM
+
+      - name: Log
+        if: always()
+        run: docker compose logs
+
+      - name: Stop
+        if: always()
+        run: docker compose down

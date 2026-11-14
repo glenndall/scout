@@ -1,0 +1,16 @@
+# Works on a Synology NAS (Container Manager > Project) or any Docker host.
+# Create an empty folder named data next to this file first (Container Manager won't make it).
+# The first start builds the image (a few minutes: Python libraries and the 29 MB voice model are downloaded).
+# Updating YakScout = replace scout.py, then Restart. Learned voices live in ./data and survive rebuilds.
+services:
+  yakscout:
+    build: .
+    image: yakscout:local
+    container_name: yakscout
+    ports:
+      - "8095:8095"               # change the left number if 8095 is taken, e.g. "8195:8095" (and in YakTube's Settings)
+    volumes:
+      - ./scout.py:/app/scout.py:ro   # the program (read-only)
+      - ./data:/data                  # voices.json (the voices YakScout has learned) lives in ./data
+    user: "0:0"                   # lets it write to NAS folders regardless of Synology permissions
+    restart: unless-stopped

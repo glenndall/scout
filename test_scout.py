@@ -154,6 +154,39 @@ class Server(unittest.TestCase):
         self.assertEqual([(v["name"], v["channels"]) for v in st["voices"]], [("tbQTA6u4lEM", 1)])
         self.assertRegex(st["voices"][0]["learned"], r"^[A-Z][a-z]{2} \d{1,2}$")              # e.g. "Nov 13"
 
+    def test_learn_and_forget(self):
+        keep = scout.learn_short
+        def learn(vid):
+            if vid == "quiet000000":
+                raise scout.NoVoice("not enough talking at the start to learn a voice from")
+            scout.learn_voice(vid, vp(1), "Volze")
+            return "tbQTA6u4lEM", ["Drip Dyl", "Volze"], False
+        scout.learn_short = learn
+        try:
+            self.assertEqual(self.ask("/learn", {"id": "AeyLzuVhr1s"}),
+                             (200, {"name": "tbQTA6u4lEM", "channels": ["Drip Dyl", "Volze"], "new": False}))
+            self.assertEqual(self.ask("/learn", {"id": "quiet000000"})[0], 422)
+            self.assertEqual(self.ask("/learn", {"id": "nope"})[0], 400)
+        finally:
+            scout.learn_short = keep
+        st = self.ask("/status")[1]
+        self.assertEqual(st["voices"][0]["channel_names"], ["Drip Dyl", "Volze"])
+        self.assertGreaterEqual(st["up"], 0)
+        self.assertEqual(self.ask("/forget", {"name": "tbQTA6u4lEM"}), (200, {"forgot": True}))
+        self.assertEqual(self.ask("/forget", {"name": "tbQTA6u4lEM"}), (200, {"forgot": False}))
+        self.assertEqual(self.ask("/forget", {})[0], 400)
+        self.assertEqual(self.ask("/status")[1]["voices"], [])
+
+    def test_backup_and_restore_voices(self):
+        full = self.ask("/voices")[1]["voices"]
+        self.assertEqual(len(full[0]["print"]), 512)                              # voiceprints included
+        scout.forget_voice("tbQTA6u4lEM")
+        bad = {"name": "junk", "print": [1, 2]}
+        self.assertEqual(self.ask("/voices", {"voices": full + [bad, "x"]}), (200, {"added": 1, "voices": 1}))
+        again = dict(full[0], name="other name", channels=["Volze"])            # same voice under another name
+        self.assertEqual(self.ask("/voices", {"voices": [again]})[1], {"added": 1, "voices": 1})
+        self.assertEqual(scout.load_voices()[0]["channels"], ["Drip Dyl", "Volze"])   # merged into it
+
     def test_look(self):
         def look(vid, voices=None):
             if vid == "gone0000000":

@@ -1,23 +1,23 @@
 #!/usr/bin/env python3
-"""Scout: listens to the Shorts YakTube is about to show and tells YakTube which ones come from content farms.
+"""YakScout: listens to the Shorts YakTube is about to show and tells YakTube which ones come from content farms.
 
 Content farms are the faceless channels that turn out Shorts by the hundred from one formula to farm views and ad
-money. Being made with AI isn't what Scout looks for: plenty of people make clever, funny things with AI. What gives a
+money. Being made with AI isn't what YakScout looks for: plenty of people make clever, funny things with AI. What gives a
 farm away is the formula repeated, above all the same synthetic voice across channel after channel.
 
 Runs on any computer YakTube can reach (a Mac, an Ubuntu PC, a NAS with Docker). Needs Python 3.9+, ffmpeg, numpy,
 onnxruntime and the voice model in models/ (see the README); yt-dlp is only a backup. It waits for YakTube to connect
-(put this computer's address in YakTube's Settings > Scout). YakTube hands it Shorts one at a time (POST /look); for
-each, Scout fetches just the first 15 seconds of sound (about 80 KB) and:
+(put this computer's address in YakTube's Settings > YakScout). YakTube hands it Shorts one at a time (POST /look); for
+each, YakScout fetches just the first 15 seconds of sound (about 80 KB) and:
   - checks someone is talking (YouTube's own automatic captions for those seconds),
   - turns the voice into a voiceprint with a speaker-recognition model (CAM++, trained to tell people's voices apart),
   - compares it with the voices it has learned from Shorts known to be from farms (`scout.py learn <link>`).
-A voice heard on two or more channels counts for more: that's the farm's tell. YakTube adds Scout's score to what it
-already read in the title and captions, and drops the Short if the total is high enough. If Scout isn't running,
+A voice heard on two or more channels counts for more: that's the farm's tell. YakTube adds YakScout's score to what it
+already read in the title and captions, and drops the Short if the total is high enough. If YakScout isn't running,
 YakTube just carries on with the title/caption check alone.
 
     python3 scout.py                       wait for YakTube (port 8095; --port to change it)
-    python3 scout.py check <link or id>    show what Scout makes of a Short (YakTube isn't told)
+    python3 scout.py check <link or id>    show what YakScout makes of a Short (YakTube isn't told)
     python3 scout.py learn <link or id>    this Short is from a farm: remember its voice
 """
 import argparse, json, os, re, shutil, subprocess, sys, tempfile, threading, time
@@ -28,7 +28,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 VOICES = os.environ.get("SCOUT_VOICES", os.path.join(HERE, "voices.json"))   # voices learned from known farm Shorts
 MODEL = os.environ.get("SCOUT_MODEL", os.path.join(HERE, "models", "3dspeaker_speech_campplus_sv_en_voxceleb_16k.onnx"))
 PORT = int(os.environ.get("SCOUT_PORT", "8095"))                                # where YakTube finds it
-VERSION = "0.3"
+VERSION = "0.5"
 VID_RE = re.compile(r"(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{11}(?![A-Za-z0-9_-])")
 
 SR = 16000                 # sound looked at in this many samples a second
@@ -83,7 +83,7 @@ def get(url, timeout=15):
 
 def start_of_sound(j, secs=LISTEN):
     """The first `secs` seconds of the Short's smallest sound file (bytes), from a player() answer. YouTube only
-    hands out the start of a file this way, never the whole of it, which is all Scout wants."""
+    hands out the start of a file this way, never the whole of it, which is all YakScout wants."""
     fm = [f for f in j.get("streamingData", {}).get("adaptiveFormats", [])
           if f.get("mimeType", "").startswith("audio/mp4") and f.get("url")
           and f.get("audioTrack", {}).get("audioIsDefault", True) and not f.get("isDrc")]   # the original voice, not
@@ -163,7 +163,7 @@ def model():
     global _MODEL
     if _MODEL is None:
         if not os.path.isfile(MODEL):
-            sys.exit(f"The voice model isn't there: {MODEL}\nDownload it (see the README), or set SCOUT_MODEL.")
+            sys.exit(f"The voice model isn't there: {MODEL}\nDownload it: python3 get_model.py (or set SCOUT_MODEL).")
         import onnxruntime as ort
         o = ort.SessionOptions()
         o.intra_op_num_threads = 2
@@ -258,11 +258,60 @@ def learn_voice(name, vp, channel="", path=None):
     else:
         voices.append({"name": name, "learned": time.strftime("%Y-%m-%d"), "channels": [channel] if channel else [],
                        "print": [round(float(x), 5) for x in vp]})
+    save_voices(voices, path)
+    return name, len(voices)
+
+
+def save_voices(voices, path=None):
+    path = path or VOICES
     tmp = path + ".new"
     with open(tmp, "w") as f:
         json.dump({"voices": voices}, f)
     os.replace(tmp, path)
-    return name, len(voices)
+
+
+def forget_voice(name, path=None):
+    """Stop recognising a learned voice. Returns whether there was one by that name."""
+    voices = load_voices(path)
+    keep = [v for v in voices if v["name"] != name]
+    if len(keep) != len(voices):
+        save_voices(keep, path)
+    return len(keep) != len(voices)
+
+
+def add_voices(new, path=None):
+    """Restore voices from a backup: each one is added, or (if it's a voice already known) its channels are merged
+    into that one. Ones without a usable voiceprint are skipped. Returns how many were added or merged."""
+    voices, n = load_voices(path), 0
+    for v in new if isinstance(new, list) else []:
+        if not (isinstance(v, dict) and isinstance(v.get("name"), str) and isinstance(v.get("print"), list)
+                and len(v["print"]) == 512 and all(isinstance(x, (int, float)) for x in v["print"])):
+            continue
+        chans = [str(c)[:100] for c in v.get("channels", []) if isinstance(c, str)][:50]
+        same = next((k for k in voices if k["name"] == v["name"]), None) or voice_match(v["print"], voices)[0]
+        if same:
+            same["channels"] = same.get("channels", []) + [c for c in chans if c not in same.get("channels", [])]
+        else:
+            voices.append({"name": v["name"][:60], "learned": str(v.get("learned", ""))[:10] or time.strftime("%Y-%m-%d"),
+                           "channels": chans, "print": [round(float(x), 5) for x in v["print"]]})
+        n += 1
+    save_voices(voices, path)
+    return n
+
+
+class NoVoice(Exception):
+    pass
+
+
+def learn_short(vid):
+    """Learn the voice of a Short known to be from a farm. (voice name, its channels, learned a new voice?)."""
+    sound, words, channel = hear(vid)
+    vp = voiceprint(sound)
+    if vp is None or (words is not None and words < MIN_WORDS):
+        raise NoVoice("not enough talking at the start to learn a voice from")
+    name, _ = learn_voice(vid, vp, channel)
+    v = next((v for v in load_voices() if v["name"] == name), {})
+    return name, v.get("channels", []), name == vid
 
 
 def look(vid, voices=None):
@@ -278,21 +327,25 @@ def look(vid, voices=None):
 
 # ---------------------------------------------------------------- waiting for YakTube
 LOOKING = threading.Lock()                                    # one Short at a time
+STARTED = time.time()
 
 
 def status():
-    """What YakTube shows in Settings > Scout."""
+    """What YakTube shows in Settings > YakScout."""
     def when(v):
         try:
             return time.strftime("%b %-d", time.strptime(v.get("learned", ""), "%Y-%m-%d"))
         except ValueError:
             return ""
-    return {"scout": VERSION, "busy": LOOKING.locked(),
-            "voices": [{"name": v["name"], "learned": when(v), "channels": len(v.get("channels", []))} for v in load_voices()]}
+    return {"scout": VERSION, "busy": LOOKING.locked(), "up": int(time.time() - STARTED),
+            "voices": [{"name": v["name"], "learned": when(v), "channels": len(v.get("channels", [])),
+                        "channel_names": v.get("channels", [])[:20]} for v in load_voices()]}
 
 
 class Handler(BaseHTTPRequestHandler):
-    """GET /status, and POST /look {"id": "..."} -> {"score": 0-100, "why": [...], "facts": "..."}."""
+    """GET /status; POST /look {"id"} -> {"score": 0-100, "why": [...], "facts"}; POST /learn {"id"} -> {"name",
+    "channels", "new"}; POST /forget {"name"} -> {"forgot": true/false}; GET /voices and POST /voices {"voices": [...]}
+    (YakTube's backup and restore)."""
     def reply(self, code, obj):
         body = json.dumps(obj).encode()
         self.send_response(code)
@@ -304,25 +357,53 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path.split("?")[0] == "/status":
             return self.reply(200, status())
+        if self.path.split("?")[0] == "/voices":                 # everything learned, voiceprints too (YakTube's backup)
+            return self.reply(200, {"voices": load_voices()})
         self.reply(404, {"error": "not here"})
 
     def do_POST(self):
-        if self.path != "/look":
+        if self.path not in ("/look", "/learn", "/forget", "/voices"):
             return self.reply(404, {"error": "not here"})
+        cap = 4_000_000 if self.path == "/voices" else 1000
         try:
-            vid = json.loads(self.rfile.read(min(int(self.headers.get("Content-Length") or 0), 1000)) or b"{}").get("id", "")
+            body = json.loads(self.rfile.read(min(int(self.headers.get("Content-Length") or 0), cap)) or b"{}")
+            body = body if isinstance(body, dict) else {}
         except ValueError:
-            vid = ""
+            body = {}
+        if self.path == "/voices":                               # restore from YakTube's backup
+            with LOOKING:
+                n = add_voices(body.get("voices"))
+            print(f"[yakscout] restored {n} voice(s) from a backup", flush=True)
+            return self.reply(200, {"added": n, "voices": len(load_voices())})
+        if self.path == "/forget":
+            name = body.get("name")
+            if not isinstance(name, str) or not name:
+                return self.reply(400, {"error": "need a name"})
+            with LOOKING:
+                gone = forget_voice(name)
+            print(f"[yakscout] forgot voice {name}" if gone else f"[yakscout] no voice called {name}", flush=True)
+            return self.reply(200, {"forgot": gone})
+        vid = body.get("id", "")
         if not (isinstance(vid, str) and VID_RE.fullmatch(vid)):
             return self.reply(400, {"error": "need an id"})
+        if self.path == "/learn":
+            with LOOKING:
+                try:
+                    name, channels, new = learn_short(vid)
+                except NoVoice as ex:
+                    return self.reply(422, {"error": str(ex)})
+                except Exception as ex:
+                    return self.reply(502, {"error": str(ex)[:200]})
+            print(f"[yakscout] learned {vid}: {'new voice' if new else 'same voice as ' + name} ({', '.join(channels)})", flush=True)
+            return self.reply(200, {"name": name, "channels": channels, "new": new})
         with LOOKING:
             t = time.time()
             try:
                 score, why, facts = look(vid)
             except Exception as ex:                             # couldn't fetch or read it
-                print(f"[scout] {vid}: couldn't listen ({ex})", flush=True)
+                print(f"[yakscout] {vid}: couldn't listen ({ex})", flush=True)
                 return self.reply(502, {"error": str(ex)[:200]})
-        print(f"[scout] {vid} {score:3d}  {'; '.join(why) or '-'}  [{facts} | {time.time() - t:.1f}s]", flush=True)
+        print(f"[yakscout] {vid} {score:3d}  {'; '.join(why) or '-'}  [{facts} | {time.time() - t:.1f}s]", flush=True)
         self.reply(200, {"score": score, "why": why, "facts": facts})
 
     def log_message(self, fmt, *args):
@@ -332,7 +413,7 @@ class Handler(BaseHTTPRequestHandler):
 def serve(host, port):
     model()                                                   # say now if the model is missing, not at the first Short
     srv = ThreadingHTTPServer((host, port), Handler)
-    print(f"Scout {VERSION} waiting for YakTube on port {port}. In YakTube: Settings > Scout, this computer's address.",
+    print(f"YakScout {VERSION} waiting for YakTube on port {port}. In YakTube: Settings > YakScout, this computer's address.",
           flush=True)
     srv.serve_forever()
 
@@ -367,14 +448,11 @@ def main():
                 score, why, facts = look(vid)
                 print(f"{vid} {score:3d}  {'; '.join(why) or '-'}  [{facts}]")
                 continue
-            sound, words, channel = hear(vid)
-            vp = voiceprint(sound)
-            if vp is None or (words is not None and words < MIN_WORDS):
-                print(f"{vid}: not enough talking at the start to learn a voice from")
-                continue
-            name, n = learn_voice(vid, vp, channel)
-            print(f"{vid}: " + (f"learned a new voice ({n} known)" if name == vid else f"same voice as {name}") +
-                  (f", {channel}" if channel else "") + f" ({VOICES})")
+            name, channels, new = learn_short(vid)
+            print(f"{vid}: " + ("learned a new voice" if new else f"same voice as {name}") +
+                  (f", on {', '.join(channels)}" if channels else "") + f" ({VOICES})")
+        except NoVoice as ex:
+            print(f"{vid}: {ex}")
         except Exception as ex:
             print(f"{vid}: couldn't listen ({ex})")
 
