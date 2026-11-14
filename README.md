@@ -118,8 +118,9 @@ then **AI-Farm channels**.
   3 or more of its Shorts and dropped over half; you can add one by name. **×** takes one off.
 - **Never drop:** channels that are always kept, whatever they score. Adding one brings its dropped Shorts back.
 - **Voices:** your learned farm voices and the shared list's, tagged *Learned* or *Shared*, with the channels each was
-  heard on and when the shared list was last updated. **Learn** from a link; **Share** downloads one of yours as a file
-  for the shared list; **×** forgets one of yours, or hides a shared one for you only.
+  heard on and when the shared list was last updated. **Learn** from a link; **Share** downloads one of yours and
+  opens the shared list's *Submit a farm voice* form, filled in; **×** forgets one of yours, or hides a shared one for
+  you only.
 - **Advanced:** **Drop at** (30-90; lower catches more and risks more mistakes) and **Remember for** (30, 60 or 90
   days, after which a Short is judged again; ones you brought back are always remembered).
 
