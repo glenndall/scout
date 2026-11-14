@@ -123,11 +123,78 @@ class Ids(unittest.TestCase):
         self.assertIsNone(scout.video_id("hello"))
 
 
+def voice_list(*voices, model=None):
+    return {"format": "yakscout-voices", "version": 1, "model": model or scout.MODEL_ID, "voices": list(voices)}
+
+
+class SharedLists(unittest.TestCase):
+    """Shared voice lists: downloading them, using them, hiding one, and sharing a learned voice."""
+    def setUp(self):
+        self.keep = scout.VOICES, scout.SHARED, scout.hear, scout.voiceprint
+        d = tempfile.mkdtemp()
+        scout.VOICES, scout.SHARED = os.path.join(d, "voices.json"), os.path.join(d, "shared-voices.json")
+        self.a = {"id": "farm-0001", "channels": ["Drip Dyl", "Volze"], "examples": ["tbQTA6u4lEM", "bad link"],
+                  "print": (vp(1) * 3).tolist()}                          # not unit length: it gets normalised
+
+    def tearDown(self):
+        scout.VOICES, scout.SHARED, scout.hear, scout.voiceprint = self.keep
+
+    def test_check_list(self):
+        got = scout.check_list(voice_list(self.a, {"id": "x", "print": [1, 2]}, "junk"), "u")
+        self.assertEqual([(v["name"], v["examples"], v["list"]) for v in got], [("farm-0001", ["tbQTA6u4lEM"], "u")])
+        self.assertAlmostEqual(sum(x * x for x in got[0]["print"]), 1, places=3)
+        with self.assertRaisesRegex(ValueError, "another voice model"):
+            scout.check_list(voice_list(self.a, model="something-else/1"))
+        with self.assertRaises(ValueError):
+            scout.check_list({"voices": []})
+
+    def test_refresh_use_and_hide(self):
+        lists = {"https://a/voices.json": json.dumps(voice_list(self.a)).encode()}
+        def fetch(u):
+            if u not in lists:
+                raise OSError("404")
+            return lists[u]
+        r = scout.refresh_lists("https://a/voices.json https://b/voices.json", fetch)
+        self.assertEqual(r["https://a/voices.json"], "ok 1")
+        self.assertIn("404", r["https://b/voices.json"])
+        self.assertEqual([v["name"] for v in scout.known_voices()], ["farm-0001"])
+        del lists["https://a/voices.json"]                                  # list a can't be reached: keep what we had
+        scout.refresh_lists("https://a/voices.json", fetch)
+        self.assertEqual(len(scout.shared_voices()), 1)
+        near = vp(1) + 0.02 * vp(9)
+        who, gap = scout.voice_match(near / np.linalg.norm(near), scout.known_voices())
+        self.assertEqual((who["name"], scout.judge(who, 40)[0]), ("farm-0001", 50))   # 2 channels: drops a Short alone
+        self.assertTrue(scout.forget_voice("farm-0001"))                    # x hides a shared voice here only
+        self.assertEqual(scout.known_voices(), [])
+        self.assertEqual(len(scout.shared_voices(hide=set())), 1)
+        scout.refresh_lists("off", fetch)                                   # no lists: nothing shared
+        self.assertEqual(scout.shared_voices(hide=set()), [])
+
+    def test_learn_skips_shared_and_share(self):
+        scout.refresh_lists("https://a", lambda u: json.dumps(voice_list(self.a)).encode())
+        scout.hear = lambda vid: (np.zeros(10, np.float32), 40, "New Chan")
+        scout.voiceprint = lambda a, run=None: vp(1)                        # the shared voice
+        self.assertEqual(scout.learn_short("AeyLzuVhr1s"), ("farm-0001", ["Drip Dyl", "Volze"], False))
+        self.assertEqual(scout.load_voices(), [])                           # not learned twice
+        scout.voiceprint = lambda a, run=None: vp(5)                        # a new voice
+        self.assertEqual(scout.learn_short("qhIoV4SdbNA")[2], True)
+        scout.voiceprint = lambda a, run=None: vp(5)
+        scout.hear = lambda vid: (np.zeros(10, np.float32), 40, "Other Chan")
+        scout.learn_short("ZN-Vzf-PCeg")
+        e = scout.share_entry("qhIoV4SdbNA")
+        self.assertEqual((e["id"], e["model"], e["channels"], e["examples"]),
+                         ("qhiov4sdbna", scout.MODEL_ID, ["New Chan", "Other Chan"], ["qhIoV4SdbNA", "ZN-Vzf-PCeg"]))
+        self.assertEqual(len(e["print"]), 512)
+        self.assertIsNone(scout.share_entry("nope"))
+        self.assertEqual(scout.check_list(voice_list(e))[0]["name"], "qhiov4sdbna")   # a share is a valid list entry
+
+
 class Server(unittest.TestCase):
     """What YakTube talks to: GET /status and POST /look."""
     def setUp(self):
-        self.keep = scout.look, scout.VOICES
-        scout.VOICES = os.path.join(tempfile.mkdtemp(), "voices.json")
+        self.keep = scout.look, scout.VOICES, scout.SHARED
+        d = tempfile.mkdtemp()
+        scout.VOICES, scout.SHARED = os.path.join(d, "voices.json"), os.path.join(d, "shared-voices.json")
         scout.learn_voice("tbQTA6u4lEM", vp(1), "Drip Dyl")
         self.srv = scout.ThreadingHTTPServer(("127.0.0.1", 0), scout.Handler)
         threading.Thread(target=self.srv.serve_forever, daemon=True).start()
@@ -136,7 +203,7 @@ class Server(unittest.TestCase):
     def tearDown(self):
         self.srv.shutdown()
         self.srv.server_close()
-        scout.look, scout.VOICES = self.keep
+        scout.look, scout.VOICES, scout.SHARED = self.keep
 
     def ask(self, path, body=None):
         req = urllib.request.Request(self.base + path, None if body is None else json.dumps(body).encode(),
@@ -186,6 +253,16 @@ class Server(unittest.TestCase):
         again = dict(full[0], name="other name", channels=["Volze"])            # same voice under another name
         self.assertEqual(self.ask("/voices", {"voices": [again]})[1], {"added": 1, "voices": 1})
         self.assertEqual(scout.load_voices()[0]["channels"], ["Drip Dyl", "Volze"])   # merged into it
+
+    def test_share_and_status_sources(self):
+        scout.refresh_lists("https://a", lambda u: json.dumps(voice_list({"id": "farm-0002", "channels": ["A", "B"],
+                                                                          "print": vp(7).tolist()})).encode())
+        st = self.ask("/status")[1]
+        self.assertEqual([(v["name"], v["source"]) for v in st["voices"]], [("tbQTA6u4lEM", "learned"), ("farm-0002", "shared")])
+        self.assertEqual([(l["url"], l["count"]) for l in st["lists"]], [("https://a", 1)])
+        code, e = self.ask("/share?name=tbQTA6u4lEM")
+        self.assertEqual((code, e["channels"], e["model"]), (200, ["Drip Dyl"], scout.MODEL_ID))
+        self.assertEqual(self.ask("/share?name=farm-0002")[0], 404)          # only your own voices are shared from here
 
     def test_look(self):
         def look(vid, voices=None):

@@ -20,7 +20,9 @@ AI-dubbed tracks) and runs three steps:
    seconds), so music on its own is left alone.
 2. **Voiceprint:** a speaker-recognition model (CAM++ from 3D-Speaker) turns the voice into a voiceprint, fed in
    2-second pieces and averaged.
-3. **Comparison:** the voiceprint is compared with the farm voices YakScout has learned.
+3. **Comparison:** the voiceprint is compared with the farm voices YakScout has learned, and with the shared list of
+   farm voices other people found ([yakscout-voices](https://github.com/glenndall/yakscout-voices), downloaded once
+   a day).
 
 About 2 seconds a Short on a 2020 MacBook, about 4 on a Synology DS220+. yt-dlp is only a backup for when YouTube
 won't hand the audio over directly.
@@ -87,9 +89,16 @@ In Docker: Container Manager → Container → yakscout → Terminal → Create 
 - **Training:** teach YakScout a farm voice from the terminal (`learn`) or, easier, from YakTube: **Settings →
   YakScout → Voices**, paste a link and **Learn**. Teaching a voice it already knows adds that channel to it instead
   of making a duplicate; that's how a voice reaches "2 or more channels".
-- **Data storage:** learned voices are kept in `data/voices.json` (Docker) or `voices.json` next to `scout.py`, and
-  survive updates and rebuilds. `SCOUT_VOICES`, `SCOUT_MODEL` and `SCOUT_PORT` (or `--port`) move them, the model or
-  the port.
+- **Shared voices:** YakScout downloads the community list of farm voices,
+  [yakscout-voices](https://github.com/glenndall/yakscout-voices), at start-up and once a day (`python scout.py lists`
+  does it now). A voice you learn that's already on it isn't learned twice. `SCOUT_LISTS` sets other list URLs
+  (space-separated), or `off` for none.
+- **Sharing a voice:** `python scout.py share <voice name>` (or **Share** on a learned voice in YakTube) writes a file to
+  send to the list as a pull request; its README explains how. Reviewers check a submission with
+  `python scout.py verify <file>`, which listens to its example Shorts.
+- **Data storage:** learned voices are kept in `data/voices.json` (Docker) or `voices.json` next to `scout.py`, the
+  shared list in `shared-voices.json` beside it; both survive updates and rebuilds. `SCOUT_VOICES`, `SCOUT_MODEL` and
+  `SCOUT_PORT` (or `--port`) move them, the model or the port.
 
 ## 5. YakTube Integration & Management
 
@@ -108,7 +117,9 @@ then **AI-Farm channels**.
 - **AI-Farm channels:** every Short from these is dropped unchecked. YakScout adds a channel itself once it has judged
   3 or more of its Shorts and dropped over half; you can add one by name. **×** takes one off.
 - **Never drop:** channels that are always kept, whatever they score. Adding one brings its dropped Shorts back.
-- **Voices:** the learned farm voices and the channels each was heard on. **Learn** from a link; **×** forgets one.
+- **Voices:** your learned farm voices and the shared list's, tagged *Learned* or *Shared*, with the channels each was
+  heard on and when the shared list was last updated. **Learn** from a link; **Share** downloads one of yours as a file
+  for the shared list; **×** forgets one of yours, or hides a shared one for you only.
 - **Advanced:** **Drop at** (30-90; lower catches more and risks more mistakes) and **Remember for** (30, 60 or 90
   days, after which a Short is judged again; ones you brought back are always remembered).
 
@@ -124,12 +135,14 @@ then **AI-Farm channels**.
 
 YakScout answers plain HTTP with JSON on port `8095`:
 
-- `GET /status`: version, whether it's busy, uptime in seconds, and the learned voices (name, date learned, channels).
+- `GET /status`: version, whether it's busy, uptime in seconds, the shared lists (URL, voices, when downloaded) and
+  all voices (name, date learned, channels, `learned` or `shared`).
 - `POST /look` `{"id": "<video id>"}`: scores one Short: `{"score": 0-100, "why": [...], "facts": "..."}`, or `502`
   if it couldn't fetch it. One at a time.
 - `POST /learn` `{"id": ...}`: learns that Short's voice: `{"name", "channels", "new"}`, or `422` if there's too
   little talking.
-- `POST /forget` `{"name": ...}`: removes a learned voice.
+- `POST /forget` `{"name": ...}`: removes a learned voice, or hides a shared one here.
+- `GET /share?name=...`: a learned voice as a submission file for the shared list.
 - `GET /voices` / `POST /voices` `{"voices": [...]}`: all learned voices with their voiceprints, and adding them back
   (merged with what's there). YakTube's Backup and Restore use these.
 

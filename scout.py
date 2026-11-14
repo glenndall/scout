@@ -28,7 +28,12 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 VOICES = os.environ.get("SCOUT_VOICES", os.path.join(HERE, "voices.json"))   # voices learned from known farm Shorts
 MODEL = os.environ.get("SCOUT_MODEL", os.path.join(HERE, "models", "3dspeaker_speech_campplus_sv_en_voxceleb_16k.onnx"))
 PORT = int(os.environ.get("SCOUT_PORT", "8095"))                                # where YakTube finds it
-VERSION = "0.5"
+VERSION = "0.6"
+MODEL_ID = "campplus-en-voxceleb-16k/fbank80-2s-avg/1"   # what made a voiceprint: only ones made the same way compare
+# Shared voice lists (one or more URLs, space-separated; "off" for none): farm voices other people found, downloaded
+# once a day and used alongside the ones learned here. Kept in shared-voices.json next to voices.json.
+LISTS = os.environ.get("SCOUT_LISTS", "https://raw.githubusercontent.com/glenndall/yakscout-voices/main/voices.json")
+SHARED = os.path.join(os.path.dirname(os.path.abspath(VOICES)), "shared-voices.json")
 VID_RE = re.compile(r"(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{11}(?![A-Za-z0-9_-])")
 
 SR = 16000                 # sound looked at in this many samples a second
@@ -236,18 +241,107 @@ def judge(voice, words):
 
 
 # ---------------------------------------------------------------- learned voices
+def read_json(path):
+    try:
+        with open(path) as f:
+            d = json.load(f)
+        return d if isinstance(d, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def write_json(path, d):
+    tmp = path + ".new"
+    with open(tmp, "w") as f:
+        json.dump(d, f)
+    os.replace(tmp, path)
+
+
 def load_voices(path=None):
     """Learned voices. Ones from before version 0.3 (pitch and tone, no voiceprint) can't be used and are skipped."""
-    try:
-        with open(path or VOICES) as f:
-            return [v for v in json.load(f).get("voices", []) if len(v.get("print", [])) > 100]
-    except (OSError, ValueError):
-        return []
+    return [v for v in read_json(path or VOICES).get("voices", []) if len(v.get("print", [])) > 100]
 
 
-def learn_voice(name, vp, channel="", path=None):
-    """Remember a voice from a Short known to be from a farm. If it's a voice already known, the channel is added to
-    it instead (a voice on several channels counts for more). Returns (the voice's name, how many are known)."""
+def hidden(path=None):
+    """Shared voices you've hidden here (with x in YakTube), by id."""
+    return set(read_json(path or VOICES).get("hidden", []))
+
+
+def good_print(p):
+    return isinstance(p, list) and len(p) == 512 and all(isinstance(x, (int, float)) for x in p)
+
+
+def shared_voices(path=None, hide=None):
+    """Voices from the shared lists, as {"name", "channels", "examples", "print", "shared": True}, less hidden ones."""
+    hide = hidden() if hide is None else hide
+    return [dict(v, shared=True) for v in read_json(path or SHARED).get("voices", []) if v.get("name") not in hide]
+
+
+def known_voices():
+    return load_voices() + shared_voices()
+
+
+def check_list(d, url=""):
+    """The usable voices in a downloaded shared list (a dict as voices.json has it). Raises ValueError if it isn't one,
+    or if it was made with another model (voiceprints from different models can't be compared)."""
+    if not isinstance(d, dict) or d.get("format") != "yakscout-voices":
+        raise ValueError("not a YakScout voice list")
+    if d.get("model") != MODEL_ID:
+        raise ValueError(f"made with another voice model ({d.get('model')}); this YakScout uses {MODEL_ID}")
+    out = []
+    for v in d.get("voices", [])[:5000]:
+        if not (isinstance(v, dict) and isinstance(v.get("id"), str) and good_print(v.get("print"))):
+            continue
+        n = sum(x * x for x in v["print"]) ** 0.5 or 1
+        out.append({"name": v["id"][:60], "list": url,
+                    "channels": [str(c)[:100] for c in v.get("channels", []) if isinstance(c, str)][:100],
+                    "examples": [x for x in v.get("examples", []) if isinstance(x, str) and VID_RE.fullmatch(x)][:50],
+                    "added": str(v.get("added", ""))[:10], "print": [round(x / n, 5) for x in v["print"]]})
+    return out
+
+
+def refresh_lists(urls=None, fetch=None):
+    """Download the shared voice lists and keep them in shared-voices.json. A list that can't be reached or read keeps
+    what was downloaded before. Returns {url: "ok N" or the error}."""
+    urls = (LISTS if urls is None else urls).split()
+    if urls == ["off"]:
+        urls = []
+    fetch = fetch or (lambda u: urllib.request.urlopen(urllib.request.Request(u, headers={"User-Agent": f"YakScout/{VERSION}"}),
+                                                       timeout=20).read(5_000_001))
+    old = read_json(SHARED)
+    keep = {l["url"]: l for l in old.get("lists", []) if isinstance(l, dict) and l.get("url") in urls}
+    voices = [v for v in old.get("voices", []) if v.get("list") in urls]
+    result = {}
+    for u in urls:
+        try:
+            raw = fetch(u)
+            if len(raw) > 5_000_000:
+                raise ValueError("too big")
+            got = check_list(json.loads(raw), u)
+            voices = [v for v in voices if v.get("list") != u] + got
+            keep[u] = {"url": u, "count": len(got), "fetched": int(time.time()), "error": ""}
+            result[u] = f"ok {len(got)}"
+        except Exception as ex:
+            keep.setdefault(u, {"url": u, "count": 0, "fetched": 0})["error"] = str(ex)[:120]
+            result[u] = str(ex)[:120]
+    write_json(SHARED, {"lists": list(keep.values()), "voices": voices})
+    return result
+
+
+def lists_loop():
+    while True:
+        try:
+            for u, r in refresh_lists().items():
+                print(f"[yakscout] shared list {u}: {r}", flush=True)
+        except Exception as ex:
+            print(f"[yakscout] shared lists: {ex}", flush=True)
+        time.sleep(86400)
+
+
+def learn_voice(name, vp, channel="", path=None, example=None):
+    """Remember a voice from a Short known to be from a farm. If it's a voice already known, the channel (and the Short,
+    as an example) is added to it instead (a voice on several channels counts for more). Returns (the voice's name,
+    how many are known)."""
     path = path or VOICES
     voices = load_voices(path)
     same, _ = voice_match(vp, voices)
@@ -256,27 +350,44 @@ def learn_voice(name, vp, channel="", path=None):
             same["channels"].append(channel)
         name = same["name"]
     else:
-        voices.append({"name": name, "learned": time.strftime("%Y-%m-%d"), "channels": [channel] if channel else [],
-                       "print": [round(float(x), 5) for x in vp]})
+        same = {"name": name, "learned": time.strftime("%Y-%m-%d"), "channels": [channel] if channel else [],
+                "print": [round(float(x), 5) for x in vp]}
+        voices.append(same)
+    if example and example not in same.setdefault("examples", []):
+        same["examples"].append(example)
     save_voices(voices, path)
     return name, len(voices)
 
 
 def save_voices(voices, path=None):
     path = path or VOICES
-    tmp = path + ".new"
-    with open(tmp, "w") as f:
-        json.dump({"voices": voices}, f)
-    os.replace(tmp, path)
+    write_json(path, dict(read_json(path), voices=voices, model=MODEL_ID))
 
 
 def forget_voice(name, path=None):
-    """Stop recognising a learned voice. Returns whether there was one by that name."""
+    """Stop recognising a voice: a learned one is removed; a shared one is hidden here (the list itself is untouched).
+    Returns whether there was one by that name."""
+    path = path or VOICES
     voices = load_voices(path)
     keep = [v for v in voices if v["name"] != name]
     if len(keep) != len(voices):
         save_voices(keep, path)
-    return len(keep) != len(voices)
+        return True
+    if any(v["name"] == name for v in shared_voices(hide=set())):
+        d = read_json(path)
+        write_json(path, dict(d, hidden=sorted(set(d.get("hidden", [])) | {name})))
+        return True
+    return False
+
+
+def share_entry(name, path=None):
+    """A learned voice as a submission for a shared list (one file per voice, see the yakscout-voices repo), or None."""
+    v = next((v for v in load_voices(path) if v["name"] == name), None)
+    if not v:
+        return None
+    return {"id": re.sub(r"[^a-z0-9-]", "-", name.lower())[:40], "model": MODEL_ID, "added": time.strftime("%Y-%m-%d"),
+            "channels": v.get("channels", []), "examples": v.get("examples", []) or ([name] if VID_RE.fullmatch(name) else []),
+            "note": "", "print": v["print"]}
 
 
 def add_voices(new, path=None):
@@ -304,21 +415,39 @@ class NoVoice(Exception):
 
 
 def learn_short(vid):
-    """Learn the voice of a Short known to be from a farm. (voice name, its channels, learned a new voice?)."""
+    """Learn the voice of a Short known to be from a farm. (voice name, its channels, learned a new voice?). A voice
+    that's already in a shared list isn't learned again."""
     sound, words, channel = hear(vid)
     vp = voiceprint(sound)
     if vp is None or (words is not None and words < MIN_WORDS):
         raise NoVoice("not enough talking at the start to learn a voice from")
-    name, _ = learn_voice(vid, vp, channel)
+    shared, _ = voice_match(vp, shared_voices())
+    if shared:
+        return shared["name"], shared.get("channels", []), False
+    name, _ = learn_voice(vid, vp, channel, example=vid)
     v = next((v for v in load_voices() if v["name"] == name), {})
     return name, v.get("channels", []), name == vid
+
+
+def verify_entry(entry):
+    """For reviewing a shared-list submission: listen to each example Short and say how close its voice is to the
+    submitted voiceprint. [(video id, channel, gap or error)]."""
+    out = []
+    for vid in entry.get("examples", []):
+        try:
+            sound, words, channel = hear(vid)
+            vp = voiceprint(sound)
+            out.append((vid, channel, None if vp is None else round(float(voice_gap(vp, entry["print"])), 3)))
+        except Exception as ex:
+            out.append((vid, "", str(ex)[:80]))
+    return out
 
 
 def look(vid, voices=None):
     """Listen to the start of one Short. (score, reasons, facts line)."""
     sound, words, _ = hear(vid)
     vp = voiceprint(sound)
-    who, gap = voice_match(vp, load_voices() if voices is None else voices)
+    who, gap = voice_match(vp, known_voices() if voices is None else voices)
     score, why = judge(who, words)
     facts = ("no voice" if vp is None else f"nearest voice {gap:.2f}" if gap is not None else "voice") + \
             ("" if words is None else f" | {words} words")
@@ -337,9 +466,12 @@ def status():
             return time.strftime("%b %-d", time.strptime(v.get("learned", ""), "%Y-%m-%d"))
         except ValueError:
             return ""
-    return {"scout": VERSION, "busy": LOOKING.locked(), "up": int(time.time() - STARTED),
+    lists = [{k: l.get(k) for k in ("url", "count", "fetched", "error")} for l in read_json(SHARED).get("lists", [])]
+    return {"scout": VERSION, "busy": LOOKING.locked(), "up": int(time.time() - STARTED), "lists": lists,
             "voices": [{"name": v["name"], "learned": when(v), "channels": len(v.get("channels", [])),
-                        "channel_names": v.get("channels", [])[:20]} for v in load_voices()]}
+                        "channel_names": v.get("channels", [])[:20], "source": "learned"} for v in load_voices()] +
+                      [{"name": v["name"], "learned": "", "channels": len(v.get("channels", [])),
+                        "channel_names": v.get("channels", [])[:20], "source": "shared"} for v in shared_voices()]}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -359,6 +491,10 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(200, status())
         if self.path.split("?")[0] == "/voices":                 # everything learned, voiceprints too (YakTube's backup)
             return self.reply(200, {"voices": load_voices()})
+        if self.path.split("?")[0] == "/share":                  # a learned voice as a submission for a shared list
+            name = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query).get("name", [""])[0]
+            entry = share_entry(name)
+            return self.reply(200, entry) if entry else self.reply(404, {"error": "no learned voice by that name"})
         self.reply(404, {"error": "not here"})
 
     def do_POST(self):
@@ -412,6 +548,7 @@ class Handler(BaseHTTPRequestHandler):
 
 def serve(host, port):
     model()                                                   # say now if the model is missing, not at the first Short
+    threading.Thread(target=lists_loop, daemon=True).start()  # shared voice lists: now, then once a day
     srv = ThreadingHTTPServer((host, port), Handler)
     print(f"YakScout {VERSION} waiting for YakTube on port {port}. In YakTube: Settings > YakScout, this computer's address.",
           flush=True)
@@ -429,15 +566,45 @@ def video_id(s):
 
 def main():
     ap = argparse.ArgumentParser(description="Tell YakTube which Shorts come from content farms, by their voices.")
-    ap.add_argument("what", nargs="*", help="'check <link>...' or 'learn <link>...' (leave out to wait for YakTube)")
+    ap.add_argument("what", nargs="*", help="'check <link>...', 'learn <link>...', 'share <voice>', 'verify <file>' "
+                                            "or 'lists' (leave out to wait for YakTube)")
     ap.add_argument("--port", type=int, default=PORT, help=f"port YakTube connects to (default {PORT})")
     ap.add_argument("--host", default="0.0.0.0", help="address to listen on (default: all, so YakTube can reach it)")
     a = ap.parse_args()
     cmd, args = (a.what[0], a.what[1:]) if a.what else ("serve", [])
-    if cmd not in ("serve", "check", "learn"):
-        ap.error("did you mean: scout.py check <link or id>, or scout.py learn <link or id>?")
+    if cmd not in ("serve", "check", "learn", "share", "verify", "lists"):
+        ap.error("did you mean: scout.py check <link or id>, scout.py learn <link or id>, scout.py share <voice name>, "
+                 "scout.py verify <voice file> or scout.py lists?")
     if cmd == "serve":
         return serve(a.host, a.port)
+    if cmd == "lists":                                        # download the shared voice lists now
+        for u, r in refresh_lists().items():
+            print(f"{u}: {r}")
+        return
+    if cmd == "share":                                        # a learned voice, as a file to send to a shared list
+        for name in args:
+            entry = share_entry(name)
+            if not entry:
+                print(f"{name}: no learned voice by that name (see YakTube's Voices list)")
+                continue
+            out = f"voice-{entry['id']}.json"
+            with open(out, "w") as f:
+                json.dump(entry, f, indent=1)
+            print(f"{name}: wrote {out} ({len(entry['channels'])} channels, {len(entry['examples'])} examples)")
+        return
+    if cmd == "verify":                                       # check a submission: do its examples have that voice?
+        for path in args:
+            entry = read_json(path)
+            if not good_print(entry.get("print")):
+                print(f"{path}: not a voice file")
+                continue
+            print(f"{path}: {entry.get('id')}")
+            for vid, channel, gap in verify_entry(entry):
+                if isinstance(gap, float):
+                    print(f"  {vid} {channel[:24]:24s} {gap + 0.0:.3f} {'same voice' if gap <= VOICE_MATCH else 'DIFFERENT'}")
+                else:
+                    print(f"  {vid} {channel[:24]:24s} couldn't check: {gap or 'no talking at the start'}")
+        return
     for s in args:
         vid = video_id(s)
         if not vid:
