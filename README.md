@@ -121,7 +121,11 @@ In YakTube, open **Settings → Scout** (under Plugins), enter Scout's address (
 `192.168.1.20`) and port `8095`, and Save. The badge turns **Connected**, and the line under the address shows the
 plugin version, seconds per Short, the last scan and uptime. The counts at the top refresh by themselves.
 
-**How a Short is judged.** Each new Short gets a score from 0 to 100: **Titles & captions** (built into YakTube)
+**YakTube's side.** The Scout page, the titles & captions check and the lists below live in YakTube's own
+`scout.py`, next to its `app.py` (copy and update both). That file isn't this repo's `scout.py`: keep the two in
+separate folders. Without YakTube's `scout.py`, YakTube runs as usual, with no Scout page.
+
+**How a Short is judged.** Each new Short gets a score from 0 to 100: **Titles & captions** (YakTube's `scout.py`)
 adds points for farm clues in what it says about itself, **Scan voices** (Scout) adds points for a farm voice. At
 **Drop at** (50 to start) the Short leaves the Shorts list. Two lists overrule the score: **Never drop** always wins,
 then **AI-Farm channels**.
