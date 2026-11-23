@@ -263,7 +263,7 @@ def load_voices(path=None):
 
 
 def hidden(path=None):
-    """Shared voices you've hidden here (with x in YakTube), by id."""
+    """Voices switched off here (in YakTube), learned or shared, by name. They stay listed but judge nothing."""
     return set(read_json(path or VOICES).get("hidden", []))
 
 
@@ -278,7 +278,20 @@ def shared_voices(path=None, hide=None):
 
 
 def known_voices():
-    return load_voices() + shared_voices()
+    """The voices Shorts are judged by: learned and shared ones, less the ones switched off."""
+    off = hidden()
+    return [v for v in load_voices() if v["name"] not in off] + shared_voices(hide=off)
+
+
+def switch_voice(name, on, path=None):
+    """Switch a learned or shared voice on or off here. Returns whether there's a voice by that name."""
+    path = path or VOICES
+    if not any(v["name"] == name for v in load_voices(path) + shared_voices(hide=set())):
+        return False
+    d = read_json(path)
+    off = set(d.get("hidden", []))
+    write_json(path, dict(d, hidden=sorted(off - {name} if on else off | {name})))
+    return True
 
 
 def check_list(d, url=""):
@@ -422,7 +435,7 @@ def learn_short(vid):
     vp = voiceprint(sound)
     if vp is None or (words is not None and words < MIN_WORDS):
         raise NoVoice("not enough talking at the start to learn a voice from")
-    shared, _ = voice_match(vp, shared_voices())
+    shared, _ = voice_match(vp, shared_voices(hide=set()))    # even one switched off: no second copy of it
     if shared:
         return shared["name"], shared.get("channels", []), False
     name, _ = learn_voice(vid, vp, channel, example=vid)
@@ -430,11 +443,12 @@ def learn_short(vid):
     return name, v.get("channels", []), name == vid
 
 
-def verify_entry(entry):
-    """For reviewing a shared-list submission: listen to each example Short and say how close its voice is to the
-    submitted voiceprint. [(video id, channel, gap or error)]."""
+def verify_entry(entry, ids=None):
+    """For reviewing a shared-list submission: listen to each example Short (or to `ids`, ordinary Shorts that
+    should NOT have the voice) and say how close its voice is to the submitted voiceprint.
+    [(video id, channel, gap or error)]."""
     out = []
-    for vid in entry.get("examples", []):
+    for vid in entry.get("examples", []) if ids is None else ids:
         try:
             sound, words, channel = hear(vid)
             vp = voiceprint(sound)
@@ -490,12 +504,15 @@ def status():
         except ValueError:
             return ""
     lists = [{k: l.get(k) for k in ("url", "count", "fetched", "error")} for l in read_json(SHARED).get("lists", [])]
+    off = hidden()
     return {"scout": VERSION, "busy": LOOKING.locked(), "up": int(time.time() - STARTED), "lists": lists,
             "voices": [{"name": v["name"], "learned": when(v), "channels": len(v.get("channels", [])),
                         "examples": len(v.get("examples", [])) or int(bool(VID_RE.fullmatch(v["name"]))),   # as Share counts them
-                        "channel_names": v.get("channels", [])[:20], "source": "learned"} for v in load_voices()] +
+                        "channel_names": v.get("channels", [])[:20], "source": "learned", "on": v["name"] not in off}
+                       for v in load_voices()] +
                       [{"name": v["name"], "learned": "", "channels": len(v.get("channels", [])),
-                        "channel_names": v.get("channels", [])[:20], "source": "shared"} for v in shared_voices()]}
+                        "channel_names": v.get("channels", [])[:20], "source": "shared", "on": v["name"] not in off}
+                       for v in shared_voices(hide=set())]}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -523,7 +540,7 @@ class Handler(BaseHTTPRequestHandler):
         self.reply(404, {"error": "not here"})
 
     def do_POST(self):
-        if self.path not in ("/look", "/learn", "/forget", "/voices", "/verify"):
+        if self.path not in ("/look", "/learn", "/forget", "/voices", "/verify", "/switch"):
             return self.reply(404, {"error": "not here"})
         cap = {"/voices": 4_000_000, "/verify": 200_000}.get(self.path, 1000)
         try:
@@ -536,16 +553,28 @@ class Handler(BaseHTTPRequestHandler):
             if not (isinstance(entry, dict) and good_print(entry.get("print"))):
                 return self.reply(400, {"error": "need a voice file"})
             entry = dict(entry, examples=[x for x in entry.get("examples", []) if isinstance(x, str) and VID_RE.fullmatch(x)][:10])
+            others = [x for x in body.get("others", []) if isinstance(x, str) and VID_RE.fullmatch(x)][:10] \
+                if isinstance(body.get("others"), list) else []
             with LOOKING:
-                got = verify_entry(entry)
-            return self.reply(200, {"examples": [{"id": v, "channel": ch, "gap": g if isinstance(g, float) else None,
-                                                  "error": "" if isinstance(g, float) else (g or "no talking at the start")}
-                                                 for v, ch, g in got], "limit": VOICE_MATCH})
+                got, alarms = verify_entry(entry), verify_entry(entry, others)
+            rows = lambda got: [{"id": v, "channel": ch, "gap": g if isinstance(g, float) else None,
+                                 "error": "" if isinstance(g, float) else (g or "no talking at the start")} for v, ch, g in got]
+            return self.reply(200, {"examples": rows(got), "others": rows(alarms), "limit": VOICE_MATCH})
         if self.path == "/voices":                               # restore from YakTube's backup
             with LOOKING:
                 n = add_voices(body.get("voices"))
             print(f"[scout] restored {n} voice(s) from a backup", flush=True)
             return self.reply(200, {"added": n, "voices": len(load_voices())})
+        if self.path == "/switch":                               # a voice on or off here: {"name", "on": true/false}
+            name, on = body.get("name"), body.get("on")
+            if not (isinstance(name, str) and name and isinstance(on, bool)):
+                return self.reply(400, {"error": "need a name and on"})
+            with LOOKING:
+                found = switch_voice(name, on)
+            if not found:
+                return self.reply(404, {"error": "no voice by that name"})
+            print(f"[scout] voice {name} switched {'on' if on else 'off'}", flush=True)
+            return self.reply(200, {"name": name, "on": on})
         if self.path == "/forget":
             name = body.get("name")
             if not isinstance(name, str) or not name:

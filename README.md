@@ -138,8 +138,9 @@ then **AI-Farm channels**.
 - **Never drop:** channels that are always kept, whatever they score. Adding one brings its dropped Shorts back.
 - **Voices:** your learned farm voices and the shared list's, tagged *Learned* or *Shared*, with the channels each was
   heard on and when the shared list was last updated. **Learn** from a link; **Share** downloads one of yours and
-  opens the shared list's *Submit a farm voice* form, filled in; **×** forgets one of yours, or hides a shared one for
-  you only.
+  opens the shared list's *Submit a farm voice* form, filled in. Each voice has an **On/Off** switch: an
+  off voice stays listed but judges nothing, for you only (nothing is deleted).
+
 - **Advanced:** **Drop at** (30-90; lower catches more and risks more mistakes) and **Remember for** (30, 60 or 90
   days, after which a Short is judged again; ones you brought back are always remembered).
 
@@ -165,10 +166,13 @@ Scout answers plain HTTP with JSON on port `8095`:
   if it couldn't fetch it. One at a time.
 - `POST /learn` `{"id": ...}`: learns that Short's voice: `{"name", "channels", "new"}`, or `422` if there's too
   little talking.
-- `POST /forget` `{"name": ...}`: removes a learned voice, or hides a shared one here.
+- `POST /switch` `{"name": ..., "on": true/false}`: turns a learned or shared voice on or off here (`/status`
+  marks each voice `"on"`). An off voice stays listed but judges nothing.
+- `POST /forget` `{"name": ...}`: removes a learned voice, or turns a shared one off here (YakTube no longer uses it).
 - `GET /share?name=...`: a learned voice as a submission file for the shared list.
-- `POST /verify` `{"entry": voice file}`: listens to that file's example Shorts and answers how close each one's
-  voice is to its voiceprint (YakTube's **Submissions** list).
+- `POST /verify` `{"entry": voice file, "others": [ids]}`: listens to that file's example Shorts and answers how
+  close each one's voice is to its voiceprint; `others` are ordinary Shorts that should *not* have the voice, answered
+  the same way (YakTube's **Submissions** list: a close one is a false alarm).
 - `GET /voices` / `POST /voices` `{"voices": [...]}`: all learned voices with their voiceprints, and adding them back
   (merged with what's there). YakTube's Backup and Restore use these.
 

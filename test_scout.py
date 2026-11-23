@@ -167,6 +167,11 @@ class SharedLists(unittest.TestCase):
         self.assertTrue(scout.forget_voice("farm-0001"))                    # x hides a shared voice here only
         self.assertEqual(scout.known_voices(), [])
         self.assertEqual(len(scout.shared_voices(hide=set())), 1)
+        self.assertTrue(scout.switch_voice("farm-0001", True))              # and back on
+        self.assertEqual([v["name"] for v in scout.known_voices()], ["farm-0001"])
+        self.assertTrue(scout.switch_voice("farm-0001", False))             # off: listed, judges nothing
+        self.assertEqual(scout.known_voices(), [])
+        self.assertFalse(scout.switch_voice("farm-9999", False))
         scout.refresh_lists("off", fetch)                                   # no lists: nothing shared
         self.assertEqual(scout.shared_voices(hide=set()), [])
 
@@ -290,17 +295,35 @@ class Server(unittest.TestCase):
         code, e = self.ask("/share?name=tbQTA6u4lEM")
         self.assertEqual((code, e["channels"], e["model"]), (200, ["Drip Dyl"], scout.MODEL_ID))
         self.assertEqual(self.ask("/share?name=farm-0002")[0], 404)          # only your own voices are shared from here
+        self.assertEqual([v["on"] for v in st["voices"]], [True, True])
+        self.assertEqual(self.ask("/switch", {"name": "tbQTA6u4lEM", "on": False}), (200, {"name": "tbQTA6u4lEM", "on": False}))
+        self.assertEqual(self.ask("/switch", {"name": "farm-0002", "on": False})[0], 200)
+        st = self.ask("/status")[1]                                          # off ones stay listed, marked off,
+        self.assertEqual([(v["name"], v["on"]) for v in st["voices"]], [("tbQTA6u4lEM", False), ("farm-0002", False)])
+        self.assertEqual(scout.known_voices(), [])                           # and judge nothing
+        self.assertEqual(self.ask("/switch", {"name": "tbQTA6u4lEM", "on": True})[0], 200)
+        self.assertEqual([v["name"] for v in scout.known_voices()], ["tbQTA6u4lEM"])
+        self.assertEqual(self.ask("/switch", {"name": "nobody", "on": True})[0], 404)
+        self.assertEqual(self.ask("/switch", {"name": "tbQTA6u4lEM", "on": "yes"})[0], 400)
 
     def test_verify(self):
         keep = scout.hear, scout.voiceprint
         scout.hear = lambda vid: (np.zeros(10, np.float32), 40, "Chan " + vid[:2])
-        scout.voiceprint = lambda a, run=None: vp(1)
+        scout.voiceprint = lambda a, run=None: vp(1) if a is not None and len(a) == 10 else vp(9)
         try:
-            code, r = self.ask("/verify", {"entry": {"id": "x", "print": vp(1).tolist(), "examples": ["tbQTA6u4lEM", "bad"]}})
+            code, r = self.ask("/verify", {"entry": {"id": "x", "print": vp(1).tolist(), "examples": ["tbQTA6u4lEM", "bad"]},
+                                           "others": ["qhIoV4SdbNA", "bad"]})
+            scout.hear = lambda vid: (np.zeros(11, np.float32), 40, "Other " + vid[:2])         # an ordinary Short: another voice
+            code2, r2 = self.ask("/verify", {"entry": {"id": "x", "print": vp(1).tolist(), "examples": []},
+                                             "others": ["qhIoV4SdbNA"]})
         finally:
             scout.hear, scout.voiceprint = keep
         self.assertEqual(code, 200)
         self.assertEqual([(e["id"], e["channel"], round(e["gap"], 3)) for e in r["examples"]], [("tbQTA6u4lEM", "Chan tb", 0.0)])
+        self.assertEqual([(e["id"], round(e["gap"], 3)) for e in r["others"]], [("qhIoV4SdbNA", 0.0)])   # same voice: a false alarm
+        self.assertEqual(code2, 200)
+        self.assertGreater(r2["others"][0]["gap"], scout.VOICE_MATCH)        # a different voice: no alarm
+        self.assertEqual(self.ask("/verify", {"entry": {"print": vp(1).tolist()}})[1]["others"], [])   # none asked for
         self.assertEqual(self.ask("/verify", {"entry": {"print": [1]}})[0], 400)
 
     def test_look(self):
